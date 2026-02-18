@@ -359,10 +359,20 @@ class ModeDiscovery:
 class ModeHooks:
     """Generic mode enforcement via hooks."""
 
-    def __init__(self, coordinator: Any, discovery: ModeDiscovery):
+    def __init__(
+        self,
+        coordinator: Any,
+        discovery: ModeDiscovery,
+        infrastructure_tools: set[str] | None = None,
+    ):
         self.coordinator = coordinator
         self.discovery = discovery
         self.warned_tools: set[str] = set()
+        self.infrastructure_tools: set[str] = (
+            infrastructure_tools
+            if infrastructure_tools is not None
+            else {"mode", "todo"}
+        )
 
     def _get_active_mode(self) -> ModeDefinition | None:
         """Get the currently active mode definition.
@@ -388,18 +398,24 @@ class ModeHooks:
 
         return mode
 
-    async def handle_prompt_submit(self, _event: str, _data: dict) -> "HookResult":
-        """Inject mode context on prompt submission."""
+    async def handle_provider_request(self, _event: str, _data: dict) -> "HookResult":
+        """Inject mode context on every provider request."""
         from amplifier_core.models import HookResult
 
         mode = self._get_active_mode()
         if not mode or not mode.context:
             return HookResult(action="continue")
 
-        # Wrap context in system-reminder tags
-        context_block = f"""<system-reminder source="mode-{mode.name}">
-{mode.context}
-</system-reminder>"""
+        # Wrap context in system-reminder tags with explicit MODE ACTIVE banner
+        context_block = (
+            f'<system-reminder source="mode-{mode.name}">\n'
+            f"MODE ACTIVE: {mode.name}\n"
+            f"You are CURRENTLY in {mode.name} mode. It is already active — "
+            f'do NOT call mode(set, "{mode.name}") to re-activate it. '
+            f"Follow the guidance below.\n\n"
+            f"{mode.context}\n"
+            f"</system-reminder>"
+        )
 
         return HookResult(
             action="inject_context",
@@ -417,6 +433,10 @@ class ModeHooks:
             return HookResult(action="continue")
 
         tool_name = data.get("tool_name", "")
+
+        # Infrastructure tools: always bypass the cascade
+        if tool_name in self.infrastructure_tools:
+            return HookResult(action="continue")
 
         # Safe tools: always allow
         if tool_name in mode.safe_tools:
@@ -538,16 +558,30 @@ async def mount(
     # Store discovery in session state for app access
     coordinator.session_state["mode_discovery"] = discovery
 
+    # Parse infrastructure_tools config
+    raw_infra = config.get("infrastructure_tools", None)
+    if raw_infra is not None:
+        if isinstance(raw_infra, list):
+            infrastructure_tools: set[str] = set(raw_infra)
+        else:
+            logger.warning(
+                "infrastructure_tools config must be a list, got %s; using default",
+                type(raw_infra).__name__,
+            )
+            infrastructure_tools = {"mode", "todo"}
+    else:
+        infrastructure_tools = {"mode", "todo"}
+
     # Create hooks instance
-    hooks = ModeHooks(coordinator, discovery)
+    hooks = ModeHooks(coordinator, discovery, infrastructure_tools=infrastructure_tools)
 
     # Store hooks in session state for mode switching (to reset warnings)
     coordinator.session_state["mode_hooks"] = hooks
 
     # Register hooks
     coordinator.hooks.register(
-        "prompt:submit",
-        hooks.handle_prompt_submit,
+        "provider:request",
+        hooks.handle_provider_request,
         priority=10,
         name="mode-context",
     )
