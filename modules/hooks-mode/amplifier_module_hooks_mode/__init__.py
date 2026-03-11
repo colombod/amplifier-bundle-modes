@@ -421,7 +421,7 @@ class ModeHooks:
         if not resolver:
             return content
 
-        def _replace(match: re.Match) -> str:  # type: ignore[type-arg]
+        def _replace(match: re.Match[str]) -> str:
             mention = match.group(1)
             try:
                 resolved_path = resolver.resolve(mention)

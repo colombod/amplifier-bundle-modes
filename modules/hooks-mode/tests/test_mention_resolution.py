@@ -95,6 +95,9 @@ class TestMentionResolution:
             f"Expected inject_context action, got {result.action!r}"
         )
         content = result.context_injection
+        assert content is not None, (
+            "context_injection should not be None when action is inject_context"
+        )
         assert "Always check the logs first." in content, (
             "@-mention should have been replaced with file content, "
             f"but injected context was:\n{content}"
@@ -123,6 +126,9 @@ class TestMentionResolution:
 
         assert result.action == "inject_context"
         content = result.context_injection
+        assert content is not None, (
+            "context_injection should not be None when action is inject_context"
+        )
         assert "Think before you act." in content, (
             "Mode body content must be injected unchanged when there are no @-mentions"
         )
@@ -164,6 +170,9 @@ class TestMentionResolution:
             f"got action={result.action!r}"
         )
         content = result.context_injection
+        assert content is not None, (
+            "context_injection should not be None when action is inject_context"
+        )
         assert "Some text before." in content, (
             "Content before the invalid @-mention must still be injected"
         )
