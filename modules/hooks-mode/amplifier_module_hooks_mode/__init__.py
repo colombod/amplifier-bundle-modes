@@ -12,6 +12,7 @@ custom modes without writing any Python code.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -22,6 +23,13 @@ import yaml
 
 if TYPE_CHECKING:
     from amplifier_core.models import HookResult
+
+from .events import (  # noqa: F401
+    ALL_EVENTS,
+    MODE_CONTEXT_INJECTED,
+    MODE_TOOL_BLOCKED,
+    MODE_TOOL_WARNED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +463,7 @@ class ModeHooks:
         self.coordinator = coordinator
         self.discovery = discovery
         self.warned_tools: set[str] = set()
+        self._last_context_hash: str | None = None
         self.infrastructure_tools: set[str] = (
             infrastructure_tools
             if infrastructure_tools is not None
@@ -527,90 +536,163 @@ class ModeHooks:
         return re.sub(r"^\s*(@\S+:\S+)\s*$", _replace, content, flags=re.MULTILINE)
 
     async def handle_provider_request(self, _event: str, _data: dict) -> "HookResult":
-        """Inject mode context on every provider request."""
+        """Inject mode context on every provider request.
+
+        Outer try/except (same shape as tool-mode's handler pattern): any unexpected
+        exception in the handler body is caught and logged; context injection fails open
+        (returns HookResult(action="continue")) so a handler bug never breaks a provider
+        request. Emits are bare awaits — coordinator.hooks.emit() is infallible at the
+        kernel level (hooks.rs:212-222), so per-emit guards are unnecessary.
+        """
         from amplifier_core.models import HookResult
 
-        mode = self._get_active_mode()
-        if not mode or not mode.context:
-            return HookResult(action="continue")
+        try:
+            mode = self._get_active_mode()
+            if not mode or not mode.context:
+                return HookResult(action="continue")
 
-        # Resolve any @namespace:path mentions in the mode body before injection
-        resolved_context = self._resolve_mentions(mode.context)
+            # Resolve any @namespace:path mentions in the mode body before injection
+            resolved_context = self._resolve_mentions(mode.context)
 
-        # Wrap context in system-reminder tags with explicit MODE ACTIVE banner
-        context_block = (
-            f'<system-reminder source="mode-{mode.name}">\n'
-            f"MODE ACTIVE: {mode.name}\n"
-            f"You are CURRENTLY in {mode.name} mode. It is already active — "
-            f'do NOT call mode(set, "{mode.name}") to re-activate it. '
-            f"Follow the guidance below.\n\n"
-            f"{resolved_context}\n"
-            f"</system-reminder>"
-        )
+            # Emit mode:context_injected only when the context has changed (hash-gated).
+            # Nested emit is safe: mode:context_injected is a different event name from
+            # provider:request, no handlers in this module listen on it, so there is no
+            # recursive dispatch path.
+            content_hash = hashlib.sha256(resolved_context.encode()).hexdigest()
+            if content_hash != self._last_context_hash:
+                self._last_context_hash = content_hash
+                await self.coordinator.hooks.emit(
+                    MODE_CONTEXT_INJECTED,
+                    {
+                        "mode": mode.name,
+                        "context_length": len(resolved_context),
+                        "content_hash": content_hash,
+                    },
+                )
 
-        return HookResult(
-            action="inject_context",
-            context_injection=context_block,
-            context_injection_role="system",
-            ephemeral=True,
-        )
-
-    async def handle_tool_pre(self, _event: str, data: dict) -> "HookResult":
-        """Moderate tools based on active mode policy."""
-        from amplifier_core.models import HookResult
-
-        mode = self._get_active_mode()
-        if not mode:
-            return HookResult(action="continue")
-
-        tool_name = data.get("tool_name", "")
-
-        # Infrastructure tools: always bypass the cascade
-        if tool_name in self.infrastructure_tools:
-            return HookResult(action="continue")
-
-        # Safe tools: always allow
-        if tool_name in mode.safe_tools:
-            return HookResult(action="continue")
-
-        # Explicitly blocked tools: always deny
-        if tool_name in mode.block_tools:
-            return HookResult(
-                action="deny",
-                reason=f"Mode '{mode.name}': '{tool_name}' is blocked. {mode.description}",
+            # Wrap context in system-reminder tags with explicit MODE ACTIVE banner
+            context_block = (
+                f'<system-reminder source="mode-{mode.name}">\n'
+                f"MODE ACTIVE: {mode.name}\n"
+                f"You are CURRENTLY in {mode.name} mode. It is already active — "
+                f'do NOT call mode(set, "{mode.name}") to re-activate it. '
+                f"Follow the guidance below.\n\n"
+                f"{resolved_context}\n"
+                f"</system-reminder>"
             )
 
-        # Confirm tools: let approval hook handle it
-        # (mode_confirm_tools is already set in session state by _get_active_mode)
-        if tool_name in mode.confirm_tools:
+            return HookResult(
+                action="inject_context",
+                context_injection=context_block,
+                context_injection_role="system",
+                ephemeral=True,
+            )
+
+        except Exception:
+            logger.warning(
+                "handle_provider_request error for mode '%s'; skipping context injection",
+                self.coordinator.session_state.get("active_mode"),
+                exc_info=True,
+            )
             return HookResult(action="continue")
 
-        # Warn-first tools: warn once, then allow
-        if tool_name in mode.warn_tools:
-            warn_key = f"{mode.name}:{tool_name}"
-            if warn_key not in self.warned_tools:
-                self.warned_tools.add(warn_key)
+    async def handle_tool_pre(self, _event: str, data: dict) -> "HookResult":
+        """Moderate tools based on active mode policy.
+
+        Outer try/except (same shape as tool-mode's handler pattern): any unexpected
+        exception in the handler body is caught, logged, and the handler fails closed
+        (returns HookResult(action="deny")). A handler bug never silently drops the
+        security decision. Emits are bare awaits — coordinator.hooks.emit() is
+        infallible at the kernel level (hooks.rs:212-222), so per-emit guards are
+        unnecessary.
+        """
+        from amplifier_core.models import HookResult
+
+        try:
+            mode = self._get_active_mode()
+            if not mode:
+                return HookResult(action="continue")
+
+            tool_name = data.get("tool_name", "")
+
+            # Infrastructure tools: always bypass the cascade
+            if tool_name in self.infrastructure_tools:
+                return HookResult(action="continue")
+
+            # Safe tools: always allow
+            if tool_name in mode.safe_tools:
+                return HookResult(action="continue")
+
+            # Explicitly blocked tools: always deny
+            if tool_name in mode.block_tools:
+                await self.coordinator.hooks.emit(
+                    MODE_TOOL_BLOCKED,
+                    {"tool_name": tool_name, "mode": mode.name, "reason": "block_list"},
+                )
                 return HookResult(
                     action="deny",
-                    reason=f"Mode '{mode.name}': '{tool_name}' requires confirmation. "
-                    f"Call again if this is appropriate for {mode.name} mode.",
+                    reason=f"Mode '{mode.name}': '{tool_name}' is blocked. {mode.description}",
                 )
-            return HookResult(action="continue")
 
-        # Default action for unlisted tools
-        if mode.default_action == "allow":
-            return HookResult(action="continue")
+            # Confirm tools: let approval hook handle it
+            # (require_approval_tools is already set in session state by _get_active_mode)
+            if tool_name in mode.confirm_tools:
+                return HookResult(action="continue")
 
-        # Default is block
-        return HookResult(
-            action="deny",
-            reason=f"Mode '{mode.name}': '{tool_name}' is not in the allowed list. "
-            f"Use /mode off to exit {mode.name} mode.",
-        )
+            # Warn-first tools: warn once, then allow.
+            # One event per decision: outcome="denied" on first call, outcome="allowed"
+            # on retry.
+            if tool_name in mode.warn_tools:
+                warn_key = f"{mode.name}:{tool_name}"
+                if warn_key not in self.warned_tools:
+                    self.warned_tools.add(warn_key)
+                    await self.coordinator.hooks.emit(
+                        MODE_TOOL_WARNED,
+                        {
+                            "tool_name": tool_name,
+                            "mode": mode.name,
+                            "outcome": "denied",
+                        },
+                    )
+                    return HookResult(
+                        action="deny",
+                        reason=f"Mode '{mode.name}': '{tool_name}' requires confirmation. "
+                        f"Call again if this is appropriate for {mode.name} mode.",
+                    )
+                # Second+ call: tool has been warned and acknowledged; now allowed.
+                await self.coordinator.hooks.emit(
+                    MODE_TOOL_WARNED,
+                    {"tool_name": tool_name, "mode": mode.name, "outcome": "allowed"},
+                )
+                return HookResult(action="continue")
+
+            # Default action for unlisted tools
+            if mode.default_action == "allow":
+                return HookResult(action="continue")
+
+            # Default is block
+            await self.coordinator.hooks.emit(
+                MODE_TOOL_BLOCKED,
+                {"tool_name": tool_name, "mode": mode.name, "reason": "default_action"},
+            )
+            return HookResult(
+                action="deny",
+                reason=f"Mode '{mode.name}': '{tool_name}' is not in the allowed list. "
+                f"Use /mode off to exit {mode.name} mode.",
+            )
+
+        except Exception:
+            logger.warning(
+                "handle_tool_pre error for tool '%s'; defaulting to deny",
+                data.get("tool_name", "<unknown>"),
+                exc_info=True,
+            )
+            return HookResult(action="deny")
 
     def reset_warnings(self) -> None:
-        """Reset warned tools (called when switching modes)."""
+        """Reset warned tools and context-injected hash (called when switching modes)."""
         self.warned_tools.clear()
+        self._last_context_hash = None
 
 
 async def mount(
@@ -725,6 +807,11 @@ async def mount(
         hooks.handle_tool_pre,
         priority=-20,
         name="mode-tools",
+    )
+
+    # Contribute event catalogue to observability.events channel
+    coordinator.register_contributor(
+        "observability.events", "bundle-modes:hooks-mode", lambda: ALL_EVENTS
     )
 
     return {
