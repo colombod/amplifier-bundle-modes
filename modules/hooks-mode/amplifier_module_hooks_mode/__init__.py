@@ -749,9 +749,7 @@ class ModeHooks:
             self.coordinator.session_state["mode_runtime_overlay"] = overlay
         return overlay
 
-    async def handle_mode_activated(
-        self, _event: str, data: dict
-    ) -> "HookResult":
+    async def handle_mode_activated(self, _event: str, data: dict) -> "HookResult":
         """Apply the activated mode's contributions via RuntimeOverlay.
 
         On any failure: emit mode:activation_failed with the error message and
@@ -789,6 +787,47 @@ class ModeHooks:
             await self.coordinator.hooks.emit(
                 MODE_ACTIVATION_FAILED,
                 {"mode": mode_name, "error": str(exc)},
+            )
+
+        return HookResult(action="continue")
+
+    async def handle_mode_changed(self, _event: str, data: dict) -> "HookResult":
+        """Revoke old mode's scope, then apply new mode's scope.
+
+        Payload: {"old": <old_name>, "new": <new_name>}. Either may be falsy
+        (in practice tool-mode always emits both, but defensive code costs
+        nothing here). On any error, emit mode:activation_failed and continue.
+        """
+        from amplifier_core.models import HookResult
+        from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
+
+        old_name = data.get("old")
+        new_name = data.get("new")
+
+        try:
+            overlay = self._get_or_create_overlay()
+            if old_name:
+                overlay.revoke(f"mode:{old_name}")
+            if new_name:
+                new_def = self.discovery.find(new_name)
+                if new_def and new_def.contributes:
+                    overlay.apply(f"mode:{new_name}", new_def.contributes)
+
+            await self.coordinator.hooks.emit(
+                MODE_TRANSITION_COMPLETED,
+                {"mode": new_name, "phase": "changed"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "handle_mode_changed: overlay transition failed (old=%s, new=%s): %s",
+                old_name,
+                new_name,
+                exc,
+                exc_info=True,
+            )
+            await self.coordinator.hooks.emit(
+                MODE_ACTIVATION_FAILED,
+                {"mode": new_name, "error": str(exc)},
             )
 
         return HookResult(action="continue")

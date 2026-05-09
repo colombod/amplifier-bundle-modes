@@ -92,7 +92,9 @@ async def test_activated_handler_calls_overlay_apply(tmp_path: Path) -> None:
     kw_args = call_args.kwargs
 
     # First arg: scope_name (positional or kwarg)
-    scope_arg = pos_args[0] if pos_args else kw_args.get("scope_name") or kw_args.get("scope")
+    scope_arg = (
+        pos_args[0] if pos_args else kw_args.get("scope_name") or kw_args.get("scope")
+    )
     # Second arg: contributions (positional or kwarg)
     contributions_arg = (
         pos_args[1] if len(pos_args) > 1 else kw_args.get("contributions")
@@ -156,5 +158,80 @@ async def test_activated_handler_no_contributes_is_noop(tmp_path: Path) -> None:
     coordinator.hooks.emit.assert_any_await(
         MODE_TRANSITION_COMPLETED,
         {"mode": "plain", "phase": "activated"},
+    )
+    assert result.action == "continue"
+
+
+@pytest.mark.asyncio
+async def test_changed_handler_revokes_old_then_applies_new(tmp_path: Path) -> None:
+    """handle_mode_changed revokes the old scope then applies the new scope (order matters)."""
+    from amplifier_module_hooks_mode.events import MODE_TRANSITION_COMPLETED
+
+    _write_mode(tmp_path, "old-mode", contributes={"context": ["@a:b.md"]})
+    _write_mode(
+        tmp_path,
+        "new-mode",
+        contributes={"agents": {"x": {"source": "@y:z"}}},
+    )
+
+    coordinator = _make_coordinator()
+    discovery = ModeDiscovery(search_paths=[tmp_path])
+    hooks = ModeHooks(coordinator, discovery)
+
+    call_log: list[tuple[str, str]] = []
+
+    fake_overlay = MagicMock()
+    fake_overlay.revoke = MagicMock(
+        side_effect=lambda scope: (
+            call_log.append(("revoke", scope)) or MagicMock(success=True)
+        )
+    )
+    fake_overlay.apply = MagicMock(
+        side_effect=lambda scope, contrib: (
+            call_log.append(("apply", scope)) or MagicMock(success=True)
+        )
+    )
+    coordinator.session_state["mode_runtime_overlay"] = fake_overlay
+
+    result = await hooks.handle_mode_changed(
+        "mode:changed", {"old": "old-mode", "new": "new-mode"}
+    )
+
+    assert call_log == [("revoke", "mode:old-mode"), ("apply", "mode:new-mode")]
+    coordinator.hooks.emit.assert_any_await(
+        MODE_TRANSITION_COMPLETED,
+        {"mode": "new-mode", "phase": "changed"},
+    )
+    assert result.action == "continue"
+
+
+@pytest.mark.asyncio
+async def test_changed_handler_emits_failure_on_apply_error(tmp_path: Path) -> None:
+    """handle_mode_changed emits MODE_ACTIVATION_FAILED when overlay.apply raises."""
+    from amplifier_module_hooks_mode.events import MODE_ACTIVATION_FAILED
+
+    _write_mode(tmp_path, "old-mode", contributes={"context": ["@a:b.md"]})
+    _write_mode(
+        tmp_path,
+        "new-mode",
+        contributes={"agents": {"x": {"source": "@y:z"}}},
+    )
+
+    coordinator = _make_coordinator()
+    discovery = ModeDiscovery(search_paths=[tmp_path])
+    hooks = ModeHooks(coordinator, discovery)
+
+    fake_overlay = MagicMock()
+    fake_overlay.revoke = MagicMock(return_value=MagicMock(success=True))
+    fake_overlay.apply = MagicMock(side_effect=RuntimeError("apply failed"))
+    coordinator.session_state["mode_runtime_overlay"] = fake_overlay
+
+    result = await hooks.handle_mode_changed(
+        "mode:changed", {"old": "old-mode", "new": "new-mode"}
+    )
+
+    coordinator.hooks.emit.assert_any_await(
+        MODE_ACTIVATION_FAILED,
+        {"mode": "new-mode", "error": "apply failed"},
     )
     assert result.action == "continue"
