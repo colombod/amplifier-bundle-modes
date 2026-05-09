@@ -148,3 +148,95 @@ async def test_imports_and_scaffold_smoke() -> None:
 
     # … and an empty agent registry.
     assert _agent_registry(coord) == {}
+
+
+# ---------------------------------------------------------------------------
+# S1 — session-overlap: session has X and mode contributes X
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_S1_session_overlap() -> None:
+    """S1 — session has X and mode contributes X: refcount stays >=1 throughout.
+
+    Scenario:
+    - The session pre-populates ``mode-author`` in the agent registry (simulating
+      a session that already has this agent from its baseline configuration).
+    - ``/mode-design`` ALSO contributes ``mode-author`` via its ``contributes.agents``
+      block (source: ``@modes:agents/mode-author``).
+
+    Expected behaviour:
+    - Activating ``/mode-design`` must NOT remount ``mode-author``.  The RuntimeOverlay
+      captures the session baseline at construction time (refcount=1), so the mode's
+      contribution increments the refcount to 2 — the mount gate (0→1) is never
+      crossed and the existing instance is preserved.
+    - Deactivating ``/mode-design`` (via handle_mode_cleared) must NOT unmount
+      ``mode-author``.  The revoke decrements refcount to 1 — the unmount gate
+      (1→0) is not crossed and the agent stays in the registry.
+    - The session's original agent *instance* must survive the full
+      activate/deactivate cycle unchanged (``is`` identity check).  Replacing
+      the instance would break any in-flight tool-call that holds a reference to
+      the old dict.
+    """
+    from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks
+
+    # Session baseline: mode-author already present with a session-specific marker.
+    # The '_marker' key lets us verify object identity (is-check) after the cycle.
+    session_agent: dict = {"source": "session-fake-source", "_marker": "from-session"}
+
+    # Build coordinator with mode-author pre-populated in the agent registry.
+    coord = _make_coordinator(agents={"mode-author": session_agent})
+
+    # Build discovery pointing at the real bundle modes directory.
+    # mode-design.md lives there and contributes mode-author.
+    discovery = ModeDiscovery(search_paths=[MODES_DIR])
+    hooks = ModeHooks(coord, discovery)
+
+    # ------------------------------------------------------------------ #
+    # Activate /mode-design                                                #
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = "mode-design"
+    # Note: handle_mode_activated reads data.get("name") first, then falls back
+    # to session_state["active_mode"].  Passing {"mode": "mode-design"} exercises
+    # the fallback path — mirrors what tool-mode emits in practice.
+    await hooks.handle_mode_activated("mode:activated", {"mode": "mode-design"})
+
+    reg = _agent_registry(coord)
+
+    # Assertion 1: mode-author must still be present after activation.
+    assert "mode-author" in reg, (
+        "mode-author must remain in registry after /mode-design activation "
+        "(refcount 1→2 must not remove it)"
+    )
+
+    # Assertion 2: the registry must hold the ORIGINAL session instance, not the
+    # mode's contributed dict.  If RuntimeOverlay incorrectly calls _mount when
+    # refcount >= 1, the session's agent entry is silently replaced — this assert
+    # catches that regression.
+    assert reg["mode-author"] is session_agent, (
+        "/mode-design activation must NOT replace the session's mode-author instance. "
+        "Refcount 1→2 must skip the mount call so the existing object is preserved. "
+        f"Expected id={id(session_agent):#x}, got id={id(reg['mode-author']):#x}"
+    )
+
+    # ------------------------------------------------------------------ #
+    # Deactivate /mode-design (handle_mode_cleared is the real Phase 2 name)#
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = None
+    await hooks.handle_mode_cleared("mode:cleared", {"name": "mode-design"})
+
+    reg = _agent_registry(coord)
+
+    # Assertion 3: mode-author must still be present after deactivation.
+    # The session still holds this agent; only the mode's refcount share was
+    # released (2→1), so the unmount gate (1→0) was never crossed.
+    assert "mode-author" in reg, (
+        "mode-author must remain in registry after /mode-design deactivation "
+        "(session still references it — refcount 2→1 must not remove it)"
+    )
+
+    # Assertion 4: object identity must be preserved through the full cycle.
+    assert reg["mode-author"] is session_agent, (
+        "/mode-design deactivation must NOT replace the session's mode-author instance. "
+        f"Expected id={id(session_agent):#x}, got id={id(reg['mode-author']):#x}"
+    )
