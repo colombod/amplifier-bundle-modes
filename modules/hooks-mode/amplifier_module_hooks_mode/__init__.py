@@ -58,6 +58,12 @@ class ModeDefinition:
     default_action: str = "block"  # "block" or "allow"
     allowed_transitions: list[str] | None = None  # None = any transition allowed
     allow_clear: bool = True  # False = mode(clear) denied
+    advertised: bool = (
+        True  # NEW (Phase 2): False hides the mode from LLM-facing listings
+    )
+    contributes: dict[str, Any] = field(
+        default_factory=dict
+    )  # NEW (Phase 2): runtime overlay contributions
 
 
 def parse_mode_file(file_path: Path) -> ModeDefinition | None:
@@ -177,6 +183,8 @@ def parse_mode_file(file_path: Path) -> ModeDefinition | None:
         default_action=mode_config.get("default_action", "block"),
         allowed_transitions=mode_config.get("allowed_transitions"),
         allow_clear=mode_config.get("allow_clear", True),
+        advertised=mode_config.get("advertised", True),
+        contributes=mode_config.get("contributes", {}) or {},
     )
 
 
