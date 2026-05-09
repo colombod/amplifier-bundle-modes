@@ -784,7 +784,7 @@ class ModeHooks:
             mode_def = self.discovery.find(mode_name)
             if mode_def and mode_def.contributes:
                 overlay = self._get_or_create_overlay()
-                overlay.apply(f"mode:{mode_name}", mode_def.contributes)
+                await overlay.apply(f"mode:{mode_name}", mode_def.contributes)
 
             await self.coordinator.hooks.emit(
                 MODE_TRANSITION_COMPLETED,
@@ -820,11 +820,11 @@ class ModeHooks:
         try:
             overlay = self._get_or_create_overlay()
             if old_name:
-                overlay.revoke(f"mode:{old_name}")
+                await overlay.revoke(f"mode:{old_name}")
             if new_name:
                 new_def = self.discovery.find(new_name)
                 if new_def and new_def.contributes:
-                    overlay.apply(f"mode:{new_name}", new_def.contributes)
+                    await overlay.apply(f"mode:{new_name}", new_def.contributes)
 
             await self.coordinator.hooks.emit(
                 MODE_TRANSITION_COMPLETED,
@@ -861,7 +861,7 @@ class ModeHooks:
 
         try:
             overlay = self._get_or_create_overlay()
-            overlay.revoke(f"mode:{mode_name}")
+            await overlay.revoke(f"mode:{mode_name}")
             await self.coordinator.hooks.emit(
                 MODE_TRANSITION_COMPLETED,
                 {"mode": mode_name, "phase": "cleared"},

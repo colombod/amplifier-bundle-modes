@@ -80,7 +80,7 @@ async def test_activated_handler_calls_overlay_apply(tmp_path: Path) -> None:
     hooks = ModeHooks(coordinator, discovery)
 
     fake_overlay = MagicMock()
-    fake_overlay.apply = MagicMock(return_value=MagicMock(success=True))
+    fake_overlay.apply = AsyncMock(return_value=MagicMock(success=True))
     coordinator.session_state["mode_runtime_overlay"] = fake_overlay
 
     result = await hooks.handle_mode_activated("mode:activated", {"name": "design"})
@@ -181,12 +181,12 @@ async def test_changed_handler_revokes_old_then_applies_new(tmp_path: Path) -> N
     call_log: list[tuple[str, str]] = []
 
     fake_overlay = MagicMock()
-    fake_overlay.revoke = MagicMock(
+    fake_overlay.revoke = AsyncMock(
         side_effect=lambda scope: (
             call_log.append(("revoke", scope)) or MagicMock(success=True)
         )
     )
-    fake_overlay.apply = MagicMock(
+    fake_overlay.apply = AsyncMock(
         side_effect=lambda scope, contrib: (
             call_log.append(("apply", scope)) or MagicMock(success=True)
         )
@@ -222,8 +222,8 @@ async def test_changed_handler_emits_failure_on_apply_error(tmp_path: Path) -> N
     hooks = ModeHooks(coordinator, discovery)
 
     fake_overlay = MagicMock()
-    fake_overlay.revoke = MagicMock(return_value=MagicMock(success=True))
-    fake_overlay.apply = MagicMock(side_effect=RuntimeError("apply failed"))
+    fake_overlay.revoke = AsyncMock(return_value=MagicMock(success=True))
+    fake_overlay.apply = AsyncMock(side_effect=RuntimeError("apply failed"))
     coordinator.session_state["mode_runtime_overlay"] = fake_overlay
 
     result = await hooks.handle_mode_changed(
@@ -249,7 +249,7 @@ async def test_cleared_handler_revokes_scope(tmp_path: Path) -> None:
     hooks = ModeHooks(coordinator, discovery)
 
     fake_overlay = MagicMock()
-    fake_overlay.revoke = MagicMock(return_value=MagicMock(success=True))
+    fake_overlay.revoke = AsyncMock(return_value=MagicMock(success=True))
     coordinator.session_state["mode_runtime_overlay"] = fake_overlay
 
     result = await hooks.handle_mode_cleared("mode:cleared", {"name": "design"})
@@ -346,3 +346,50 @@ def test_overlay_constructor_signature(tmp_path: Path) -> None:
     stored = coordinator.session_state.get("mode_runtime_overlay")
     assert isinstance(stored, RuntimeOverlay)
     assert overlay is stored  # same object returned
+
+
+@pytest.mark.asyncio
+async def test_handlers_await_overlay_calls(tmp_path: Path) -> None:
+    """Transition handlers must *await* overlay.apply and overlay.revoke.
+
+    Regression test for Bug 2: overlay.apply() and overlay.revoke() are
+    async methods (Phase 1 contract).  Without await the calls return
+    coroutine objects that are silently discarded — contributions are never
+    mounted and events from the overlay are never emitted.
+
+    Uses AsyncMock so that assert_awaited_once_with() can distinguish between
+    a call that was merely *scheduled* (no await) and one that was actually
+    *awaited* and driven to completion.
+    """
+    from amplifier_foundation.configurator._overlay import TransitionResult
+
+    contributes = {"agents": {"a": {"source": "@modes:agents/a"}}}
+    _write_mode(tmp_path, "alpha", contributes=contributes)
+    _write_mode(tmp_path, "beta", contributes=contributes)
+
+    coordinator = _make_coordinator()
+    discovery = ModeDiscovery(search_paths=[tmp_path])
+    hooks = ModeHooks(coordinator, discovery)
+
+    ok_result = TransitionResult(success=True, scope="test")
+    mock_overlay = MagicMock()
+    mock_overlay.apply = AsyncMock(return_value=ok_result)
+    mock_overlay.revoke = AsyncMock(return_value=ok_result)
+    coordinator.session_state["mode_runtime_overlay"] = mock_overlay
+
+    # handle_mode_activated must await overlay.apply
+    await hooks.handle_mode_activated("mode:activated", {"name": "alpha"})
+    mock_overlay.apply.assert_awaited_once_with("mode:alpha", contributes)
+
+    mock_overlay.apply.reset_mock()
+
+    # handle_mode_changed must await overlay.revoke then overlay.apply
+    await hooks.handle_mode_changed("mode:changed", {"old": "alpha", "new": "beta"})
+    mock_overlay.revoke.assert_awaited_once_with("mode:alpha")
+    mock_overlay.apply.assert_awaited_once_with("mode:beta", contributes)
+
+    mock_overlay.revoke.reset_mock()
+
+    # handle_mode_cleared must await overlay.revoke
+    await hooks.handle_mode_cleared("mode:cleared", {"name": "beta"})
+    mock_overlay.revoke.assert_awaited_once_with("mode:beta")
