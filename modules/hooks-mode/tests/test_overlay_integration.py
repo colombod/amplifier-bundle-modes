@@ -34,7 +34,7 @@ Assumptions (Phases 1 and 2 must be complete before these tests are green):
 
 from __future__ import annotations
 
-import textwrap  # noqa: F401 — reserved for scenario tests in subsequent tasks
+import textwrap
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -816,3 +816,110 @@ async def test_mode_design_end_to_end() -> None:
             "after /mode-design deactivation. "
             f"Skills still registered: {skills_after!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# M3 — contributes.context auto-injection via mode_overlay_context consumer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_contributes_context_auto_injected(tmp_path: Path) -> None:
+    """handle_provider_request must inject contributes.context files even when
+    the mode body does NOT @-mention them.
+
+    Scenario:
+    - A mode is active with body text that does NOT reference the contributed
+      context file.
+    - The coordinator's ``mode_overlay_context`` capability holds the path to
+      that file (set by RuntimeOverlay.apply during activation).
+    - ``handle_provider_request`` is called.
+
+    Expected behaviour:
+    - The contributed context file's content appears in the injected
+      ``<system-reminder>`` block, prepended before the mode body.
+    - This proves that ``handle_provider_request`` consumes
+      ``mode_overlay_context`` directly rather than relying solely on inline
+      ``@``-mentions in the mode body.
+    """
+    from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks
+
+    # ------------------------------------------------------------------ #
+    # Build a contributed context file with a unique content marker       #
+    # ------------------------------------------------------------------ #
+    ctx_file = tmp_path / "contributed.md"
+    ctx_file.write_text(
+        "CONTRIBUTED-CONTEXT-MARKER\n\nThis content comes from contributes.context.",
+        encoding="utf-8",
+    )
+
+    # ------------------------------------------------------------------ #
+    # Build a mode whose body does NOT mention the contributed file at all #
+    # ------------------------------------------------------------------ #
+    modes_dir = tmp_path / "modes"
+    modes_dir.mkdir()
+    (modes_dir / "ctx-test-mode.md").write_text(
+        textwrap.dedent("""\
+            ---
+            mode:
+              name: ctx-test-mode
+              description: Test mode for contributes.context auto-injection
+              tools:
+                safe: [read_file]
+              default_action: block
+              contributes:
+                context:
+                  - "@test:context/contributed.md"
+            ---
+
+            # Ctx Test Mode
+
+            This body does NOT @-mention the contributed context file.
+            The file should be injected via contributes.context auto-injection.
+        """),
+        encoding="utf-8",
+    )
+
+    # ------------------------------------------------------------------ #
+    # Build coordinator with capabilities set as RuntimeOverlay would after
+    # activation: mode_overlay_context holds the path list, and a mention
+    # resolver knows how to read the file.
+    # ------------------------------------------------------------------ #
+    coord = _make_coordinator(active_mode="ctx-test-mode", agents={})
+
+    # Mention resolver: maps any @-mention to ctx_file for this test
+    resolver = MagicMock()
+    resolver.resolve = MagicMock(return_value=str(ctx_file))
+
+    contributed_paths = ["@test:context/contributed.md"]
+
+    def _cap_side_effect(cap_name: str) -> Any:
+        if cap_name == "mode_overlay_context":
+            return contributed_paths
+        if cap_name == "mention_resolver":
+            return resolver
+        return None
+
+    coord.get_capability = MagicMock(side_effect=_cap_side_effect)
+
+    discovery = ModeDiscovery(search_paths=[modes_dir])
+    hooks = ModeHooks(coord, discovery)
+
+    # ------------------------------------------------------------------ #
+    # Call handle_provider_request and inspect the injected context        #
+    # ------------------------------------------------------------------ #
+    result = await hooks.handle_provider_request("provider:request", {})
+
+    assert result.action == "inject_context", (
+        f"Expected action='inject_context' but got {result.action!r}. "
+        "The mode has a non-empty body so injection must always occur."
+    )
+
+    injected: str = result.context_injection or ""
+    assert "CONTRIBUTED-CONTEXT-MARKER" in injected, (
+        "The contributed context file's content must appear in the injected "
+        "<system-reminder> even when the mode body does not @-mention it. "
+        "handle_provider_request must consume mode_overlay_context and prepend "
+        "the resolved file contents before the mode body. "
+        f"Injected context (first 500 chars): {injected[:500]!r}"
+    )

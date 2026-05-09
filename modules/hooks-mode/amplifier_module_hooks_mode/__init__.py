@@ -600,18 +600,38 @@ class ModeHooks:
             # Resolve any @namespace:path mentions in the mode body before injection
             resolved_context = self._resolve_mentions(mode.context)
 
+            # Inject files declared in contributes.context (mode_overlay_context
+            # capability is populated by RuntimeOverlay.apply on activation).
+            # Injection order: contributed-context first, then mode body — all
+            # wrapped in one <system-reminder> block so the LLM sees a single
+            # coherent context chunk rather than interleaved fragments.
+            contributed_content = ""
+            context_paths: list[str] = (
+                self.coordinator.get_capability("mode_overlay_context") or []
+            )
+            if context_paths:
+                # Build a newline-separated block of @-mentions; _resolve_mentions
+                # replaces each standalone mention line with the file's content.
+                path_block = "\n".join(str(p) for p in context_paths)
+                resolved_paths = self._resolve_mentions(path_block)
+                if resolved_paths.strip():
+                    contributed_content = resolved_paths.rstrip("\n") + "\n\n"
+
+            # Combine contributed context (if any) with the mode body
+            full_context = contributed_content + resolved_context
+
             # Emit mode:context_injected only when the context has changed (hash-gated).
             # Nested emit is safe: mode:context_injected is a different event name from
             # provider:request, no handlers in this module listen on it, so there is no
             # recursive dispatch path.
-            content_hash = hashlib.sha256(resolved_context.encode()).hexdigest()
+            content_hash = hashlib.sha256(full_context.encode()).hexdigest()
             if content_hash != self._last_context_hash:
                 self._last_context_hash = content_hash
                 await self.coordinator.hooks.emit(
                     MODE_CONTEXT_INJECTED,
                     {
                         "mode": mode.name,
-                        "context_length": len(resolved_context),
+                        "context_length": len(full_context),
                         "content_hash": content_hash,
                     },
                 )
@@ -623,7 +643,7 @@ class ModeHooks:
                 f"You are CURRENTLY in {mode.name} mode. It is already active — "
                 f'do NOT call mode(set, "{mode.name}") to re-activate it. '
                 f"Follow the guidance below.\n\n"
-                f"{resolved_context}\n"
+                f"{full_context}\n"
                 f"</system-reminder>"
             )
 

@@ -135,9 +135,20 @@ class TestMentionResolution:
         assert "Think before you act." in content, (
             "Mode body content must be injected unchanged when there are no @-mentions"
         )
-        # When there are no @-mentions, get_capability must never be called —
-        # the early-return optimisation avoids touching the resolver entirely
-        coordinator.get_capability.assert_not_called()
+        # When there are no @-mentions AND no contributed context paths, the mention
+        # resolver must never be queried — _resolve_mentions short-circuits on no '@'.
+        # (mode_overlay_context IS now checked on every request to support contributes.context
+        # auto-injection; only the mention_resolver should stay untouched here.)
+        mention_resolver_calls = [
+            call
+            for call in coordinator.get_capability.call_args_list
+            if call.args and call.args[0] == "mention_resolver"
+        ]
+        assert not mention_resolver_calls, (
+            "mention_resolver must not be queried when the mode body has no @-mentions "
+            "and there are no contributed context paths to resolve. "
+            f"Calls seen: {mention_resolver_calls!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_invalid_mention_graceful_error(self, tmp_path: Path) -> None:
