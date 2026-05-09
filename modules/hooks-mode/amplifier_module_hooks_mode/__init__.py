@@ -790,12 +790,19 @@ class ModeHooks:
         a half-activated state, emit mode:activation_failed, and return
         continue.  The RuntimeOverlay primitive handles atomic rollback of any
         partial contributions it applied before the failure.
+
+        Payload key resolution (defensive, dual-key):
+          Canonical:  data["name"]        (set by tool-mode since contract fix)
+          Legacy:     data["mode"]        (tool-mode original key, kept for compat)
+          Fallback:   session_state["active_mode"]  (set by tool-mode after emit)
         """
         from amplifier_core.models import HookResult
         from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
 
-        mode_name = data.get("name") or self.coordinator.session_state.get(
-            "active_mode"
+        mode_name = (
+            data.get("name")
+            or data.get("mode")
+            or self.coordinator.session_state.get("active_mode")
         )
         if not mode_name:
             return HookResult(action="continue")
@@ -838,15 +845,17 @@ class ModeHooks:
     async def handle_mode_changed(self, _event: str, data: dict) -> "HookResult":
         """Revoke old mode's scope, then apply new mode's scope.
 
-        Payload: {"old": <old_name>, "new": <new_name>}. Either may be falsy
-        (in practice tool-mode always emits both, but defensive code costs
-        nothing here). On any error, emit mode:activation_failed and continue.
+        Payload key resolution (defensive, dual-key):
+          Canonical:  data["old"] / data["new"]               (set by tool-mode since contract fix)
+          Legacy:     data["from_mode"] / data["to_mode"]     (tool-mode original keys, kept for compat)
+        Either may be falsy — defensive code costs nothing. On any error, emit
+        mode:activation_failed and continue.
         """
         from amplifier_core.models import HookResult
         from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
 
-        old_name = data.get("old")
-        new_name = data.get("new")
+        old_name = data.get("old") or data.get("from_mode")
+        new_name = data.get("new") or data.get("to_mode")
 
         try:
             overlay = self._get_or_create_overlay()
@@ -879,14 +888,21 @@ class ModeHooks:
     async def handle_mode_cleared(self, _event: str, data: dict) -> "HookResult":
         """Revoke the cleared mode's scope.
 
-        Payload: {"name": <cleared_name>}. On any error, emit
-        mode:activation_failed and continue (revocation should be best-effort
-        — leftover state is far better than a broken transition).
+        Payload key resolution (defensive, dual-key):
+          Canonical:  data["name"]            (set by tool-mode since contract fix)
+          Legacy:     data["previous_mode"]   (tool-mode original key, kept for compat)
+          Fallback:   session_state["active_mode"]  (pre-cleared state if available)
+        On any error, emit mode:activation_failed and continue (revocation is
+        best-effort — leftover state is far better than a broken transition).
         """
         from amplifier_core.models import HookResult
         from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
 
-        mode_name = data.get("name")
+        mode_name = (
+            data.get("name")
+            or data.get("previous_mode")
+            or self.coordinator.session_state.get("active_mode")
+        )
         if not mode_name:
             return HookResult(action="continue")
 

@@ -393,3 +393,146 @@ async def test_handlers_await_overlay_calls(tmp_path: Path) -> None:
     # handle_mode_cleared must await overlay.revoke
     await hooks.handle_mode_cleared("mode:cleared", {"name": "beta"})
     mock_overlay.revoke.assert_awaited_once_with("mode:beta")
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — B1: tool-mode payload contract drift
+#
+# tool-mode emits events with these REAL payload shapes (not the synthetic
+# shapes the tests above use):
+#
+#   mode:activated → {"mode": name, "description": ..., ...}    key: "mode"
+#   mode:changed   → {"from_mode": old, "to_mode": new, ...}    keys: "from_mode"/"to_mode"
+#   mode:cleared   → {"previous_mode": cleared_name}            key: "previous_mode"
+#
+# The handlers were written expecting different keys:
+#   handle_mode_activated reads data.get("name")
+#   handle_mode_changed   reads data.get("old") / data.get("new")
+#   handle_mode_cleared   reads data.get("name")
+#
+# Additionally, tool-mode sets session_state["active_mode"] AFTER the emit,
+# so the fallback to session_state in handle_mode_activated also returns None.
+#
+# All three handlers therefore returned HookResult(action="continue") without
+# ever calling overlay.apply/revoke — overlay contributions were silently
+# never mounted.
+#
+# These tests document the REAL payload shape and must stay green after the fix.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_activated_handler_processes_real_tool_mode_payload(
+    tmp_path: Path,
+) -> None:
+    """handle_mode_activated works when passed the REAL tool-mode event payload.
+
+    tool-mode emits {"mode": name, "description": ..., ...}.
+    The handler must resolve the mode name from "mode" key (not "name") and
+    call overlay.apply — even when session_state["active_mode"] is None at
+    event-fire time (tool-mode sets state AFTER emit).
+    """
+    contributes = {"agents": {"a": {"source": "@modes:agents/a"}}}
+    _write_mode(tmp_path, "design", contributes=contributes)
+
+    # active_mode is None at event-fire time: tool-mode sets it AFTER emit
+    coordinator = _make_coordinator(active_mode=None)
+    discovery = ModeDiscovery(search_paths=[tmp_path])
+    hooks = ModeHooks(coordinator, discovery)
+
+    fake_overlay = MagicMock()
+    fake_overlay.apply = AsyncMock(return_value=MagicMock(success=True))
+    coordinator.session_state["mode_runtime_overlay"] = fake_overlay
+
+    # Real tool-mode payload: key is "mode", not "name"
+    real_payload = {
+        "mode": "design",
+        "description": "Design mode",
+        "default_action": "block",
+        "safe_tools": ["read_file"],
+        "warn_tools": [],
+        "confirm_tools": [],
+        "block_tools": [],
+    }
+    result = await hooks.handle_mode_activated("mode:activated", real_payload)
+
+    # overlay.apply MUST have been awaited — handler must not return early
+    fake_overlay.apply.assert_awaited_once()
+    assert result.action == "continue"
+
+
+@pytest.mark.asyncio
+async def test_changed_handler_processes_real_tool_mode_payload(
+    tmp_path: Path,
+) -> None:
+    """handle_mode_changed works when passed the REAL tool-mode event payload.
+
+    tool-mode emits {"from_mode": old, "to_mode": new, ...}.
+    Handler must read "from_mode"/"to_mode" (not "old"/"new").
+    """
+    _write_mode(tmp_path, "alpha", contributes={"context": ["@a:b.md"]})
+    _write_mode(tmp_path, "beta", contributes={"agents": {"x": {"source": "@y:z"}}})
+
+    coordinator = _make_coordinator()
+    discovery = ModeDiscovery(search_paths=[tmp_path])
+    hooks = ModeHooks(coordinator, discovery)
+
+    call_log: list[tuple[str, str]] = []
+    fake_overlay = MagicMock()
+    fake_overlay.revoke = AsyncMock(
+        side_effect=lambda scope: (
+            call_log.append(("revoke", scope)) or MagicMock(success=True)
+        )
+    )
+    fake_overlay.apply = AsyncMock(
+        side_effect=lambda scope, contrib: (
+            call_log.append(("apply", scope)) or MagicMock(success=True)
+        )
+    )
+    coordinator.session_state["mode_runtime_overlay"] = fake_overlay
+
+    # Real tool-mode payload: keys are "from_mode"/"to_mode", not "old"/"new"
+    real_payload = {
+        "from_mode": "alpha",
+        "to_mode": "beta",
+        "description": "Beta mode",
+        "default_action": "block",
+        "safe_tools": [],
+        "warn_tools": [],
+        "confirm_tools": [],
+        "block_tools": [],
+    }
+    result = await hooks.handle_mode_changed("mode:changed", real_payload)
+
+    # Both revoke and apply must have been called in order
+    assert call_log == [("revoke", "mode:alpha"), ("apply", "mode:beta")]
+    assert result.action == "continue"
+
+
+@pytest.mark.asyncio
+async def test_cleared_handler_processes_real_tool_mode_payload(
+    tmp_path: Path,
+) -> None:
+    """handle_mode_cleared works when passed the REAL tool-mode event payload.
+
+    tool-mode emits {"previous_mode": cleared_name}.
+    Handler must read "previous_mode" (not "name").
+    """
+    _write_mode(tmp_path, "design", contributes={"context": ["@a:b.md"]})
+
+    # session_state["active_mode"] is None at event-fire time (already cleared)
+    coordinator = _make_coordinator(active_mode=None)
+    discovery = ModeDiscovery(search_paths=[tmp_path])
+    hooks = ModeHooks(coordinator, discovery)
+
+    fake_overlay = MagicMock()
+    fake_overlay.revoke = AsyncMock(return_value=MagicMock(success=True))
+    coordinator.session_state["mode_runtime_overlay"] = fake_overlay
+
+    # Real tool-mode payload: key is "previous_mode", not "name"
+    real_payload = {"previous_mode": "design"}
+    result = await hooks.handle_mode_cleared("mode:cleared", real_payload)
+
+    # overlay.revoke MUST have been awaited — handler must not return early
+    fake_overlay.revoke.assert_awaited_once_with("mode:design")
+    assert result.action == "continue"

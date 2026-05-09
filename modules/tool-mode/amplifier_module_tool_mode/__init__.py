@@ -334,6 +334,12 @@ class ModeTool:
         before session state is mutated. If the emit raises unexpectedly, the caller's
         outer try/except returns a failure and state is never changed — keeping the
         observable state and the ToolResult consistent.
+
+        Payload key contract (dual-key for hooks-mode compatibility):
+          mode:activated → "name" (canonical) + "mode" (legacy compat)
+          mode:changed   → "old"/"new" (canonical) + "from_mode"/"to_mode" (legacy compat)
+        hooks-mode handlers read both and fall back defensively; the canonical key
+        is always preferred.
         """
         # Capture previous mode BEFORE any state write
         previous_mode = self.coordinator.session_state.get("active_mode")
@@ -342,7 +348,8 @@ class ModeTool:
         if previous_mode is None:
             event = MODE_ACTIVATED
             payload: dict[str, Any] = {
-                "mode": name,
+                "name": name,  # canonical key — handlers read this first
+                "mode": name,  # legacy compat — kept for any external listeners
                 "description": mode_def.description,
                 "default_action": mode_def.default_action,
                 "safe_tools": mode_def.safe_tools,
@@ -353,8 +360,10 @@ class ModeTool:
         else:
             event = MODE_CHANGED
             payload = {
-                "from_mode": previous_mode,
-                "to_mode": name,
+                "old": previous_mode,  # canonical key
+                "new": name,  # canonical key
+                "from_mode": previous_mode,  # legacy compat
+                "to_mode": name,  # legacy compat
                 "description": mode_def.description,
                 "default_action": mode_def.default_action,
                 "safe_tools": mode_def.safe_tools,
@@ -500,7 +509,11 @@ class ModeTool:
             # never mutated, keeping observable state consistent with the return value.
             if current_mode_name is not None:
                 await self.coordinator.hooks.emit(
-                    MODE_CLEARED, {"previous_mode": current_mode_name}
+                    MODE_CLEARED,
+                    {
+                        "name": current_mode_name,  # canonical key — handlers read this first
+                        "previous_mode": current_mode_name,  # legacy compat
+                    },
                 )
 
             # Apply state changes only after emit succeeds
