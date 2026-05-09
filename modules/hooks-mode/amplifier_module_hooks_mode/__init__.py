@@ -171,6 +171,33 @@ def parse_mode_file(file_path: Path) -> ModeDefinition | None:
         )
         shortcut = None
 
+    # Phase 2: Parse-time referential-integrity lints.
+    contributes_block = mode_config.get("contributes", {}) or {}
+    safe_list = list(tools_config.get("safe", []) or [])
+    default_action_value = mode_config.get("default_action", "block")
+    if (
+        contributes_block.get("agents")
+        and "delegate" not in safe_list
+        and default_action_value != "allow"
+    ):
+        logger.warning(
+            "Mode '%s' contributes agents but does not allow `delegate` in tools.safe "
+            "(and default_action is not 'allow') — contributed agents will be unreachable "
+            "by the LLM while this mode is active.",
+            resolved_name,
+        )
+    if (
+        contributes_block.get("skills")
+        and "load_skill" not in safe_list
+        and default_action_value != "allow"
+    ):
+        logger.warning(
+            "Mode '%s' contributes skills but does not allow `load_skill` in tools.safe "
+            "(and default_action is not 'allow') — contributed skills will be undiscoverable "
+            "by the LLM while this mode is active.",
+            resolved_name,
+        )
+
     return ModeDefinition(
         name=resolved_name,
         description=mode_config.get("description", ""),
