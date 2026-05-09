@@ -832,6 +832,41 @@ class ModeHooks:
 
         return HookResult(action="continue")
 
+    async def handle_mode_cleared(self, _event: str, data: dict) -> "HookResult":
+        """Revoke the cleared mode's scope.
+
+        Payload: {"name": <cleared_name>}. On any error, emit
+        mode:activation_failed and continue (revocation should be best-effort
+        — leftover state is far better than a broken transition).
+        """
+        from amplifier_core.models import HookResult
+        from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
+
+        mode_name = data.get("name")
+        if not mode_name:
+            return HookResult(action="continue")
+
+        try:
+            overlay = self._get_or_create_overlay()
+            overlay.revoke(f"mode:{mode_name}")
+            await self.coordinator.hooks.emit(
+                MODE_TRANSITION_COMPLETED,
+                {"mode": mode_name, "phase": "cleared"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "handle_mode_cleared: overlay revoke failed for mode '%s': %s",
+                mode_name,
+                exc,
+                exc_info=True,
+            )
+            await self.coordinator.hooks.emit(
+                MODE_ACTIVATION_FAILED,
+                {"mode": mode_name, "error": str(exc)},
+            )
+
+        return HookResult(action="continue")
+
     def reset_warnings(self) -> None:
         """Reset warned tools and context-injected hash (called when switching modes)."""
         self.warned_tools.clear()

@@ -235,3 +235,52 @@ async def test_changed_handler_emits_failure_on_apply_error(tmp_path: Path) -> N
         {"mode": "new-mode", "error": "apply failed"},
     )
     assert result.action == "continue"
+
+
+@pytest.mark.asyncio
+async def test_cleared_handler_revokes_scope(tmp_path: Path) -> None:
+    """handle_mode_cleared calls overlay.revoke and emits MODE_TRANSITION_COMPLETED."""
+    from amplifier_module_hooks_mode.events import MODE_TRANSITION_COMPLETED
+
+    _write_mode(tmp_path, "design", contributes={"context": ["@a:b.md"]})
+
+    coordinator = _make_coordinator(active_mode=None)
+    discovery = ModeDiscovery(search_paths=[tmp_path])
+    hooks = ModeHooks(coordinator, discovery)
+
+    fake_overlay = MagicMock()
+    fake_overlay.revoke = MagicMock(return_value=MagicMock(success=True))
+    coordinator.session_state["mode_runtime_overlay"] = fake_overlay
+
+    result = await hooks.handle_mode_cleared("mode:cleared", {"name": "design"})
+
+    fake_overlay.revoke.assert_called_once_with("mode:design")
+    coordinator.hooks.emit.assert_any_await(
+        MODE_TRANSITION_COMPLETED,
+        {"mode": "design", "phase": "cleared"},
+    )
+    assert result.action == "continue"
+
+
+@pytest.mark.asyncio
+async def test_cleared_handler_handles_revoke_error(tmp_path: Path) -> None:
+    """handle_mode_cleared emits MODE_ACTIVATION_FAILED when overlay.revoke raises."""
+    from amplifier_module_hooks_mode.events import MODE_ACTIVATION_FAILED
+
+    _write_mode(tmp_path, "design", contributes={"context": ["@a:b.md"]})
+
+    coordinator = _make_coordinator(active_mode=None)
+    discovery = ModeDiscovery(search_paths=[tmp_path])
+    hooks = ModeHooks(coordinator, discovery)
+
+    fake_overlay = MagicMock()
+    fake_overlay.revoke = MagicMock(side_effect=RuntimeError("nope"))
+    coordinator.session_state["mode_runtime_overlay"] = fake_overlay
+
+    result = await hooks.handle_mode_cleared("mode:cleared", {"name": "design"})
+
+    coordinator.hooks.emit.assert_any_await(
+        MODE_ACTIVATION_FAILED,
+        {"mode": "design", "error": "nope"},
+    )
+    assert result.action == "continue"
