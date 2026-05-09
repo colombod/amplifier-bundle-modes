@@ -401,9 +401,12 @@ Mode still loads; the contributed agents are mounted but unreachable.
 
 ### 5.4 `contributes.context`
 
-Contributes context files to the session's active context while the mode is active. Files
-are injected via the context pipeline (not inlined into the mode body) and removed on
-deactivation.
+Contributes context files to the LLM context while the mode is active. On activation,
+each listed file is automatically resolved and its content is injected into the
+`<system-reminder>` block — prepended to the mode body — on every provider request.
+The mode body does **not** need to contain an explicit `@`-mention of the file; the
+injection is handled automatically by the context pipeline. On deactivation, the
+contributed content is removed.
 
 ```yaml
 contributes:
@@ -412,9 +415,13 @@ contributes:
     - "@modes-bundle:context/design-examples.md"
 ```
 
-Context contributions are ideal for `advertised: false` modes: the reference material
-pays zero token cost until the mode activates. Ordering: contributed context is injected
-after static bundle context but before the mode body, in declaration order.
+**Injection order:** contributed context files first (in declaration order), then the
+mode body — all within a single `<system-reminder>` block.
+
+**Token cost:** zero when the mode is inactive. The reference material is only injected
+on provider requests while the mode is active, making `contributes.context` ideal for
+`advertised: false` modes that carry heavy reference files without burdening every
+session.
 
 ### 5.5 `contributes.skills`
 
