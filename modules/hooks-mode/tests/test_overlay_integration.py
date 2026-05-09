@@ -310,3 +310,86 @@ async def test_S2_mode_only() -> None:
         "mode-author must be absent after /mode-design deactivation "
         "(S2: contribution must unmount on deactivation, refcount 1→0)"
     )
+
+
+# ---------------------------------------------------------------------------
+# S3 — two modes same item: both modes contribute mode-author; session has none
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_S3_two_modes_same_item() -> None:
+    """S3 — two modes contribute the same item; end-state assertions only.
+
+    Scenario:
+    - The session has NO ``mode-author`` in its baseline agent registry.
+    - Both ``/mode-design`` and ``test-overlap-mode`` contribute ``mode-author``
+      via their ``contributes.agents`` blocks (same source:
+      ``@modes:agents/mode-author``).
+
+    Expected end-state behaviour (v1 unmount/remount churn is acceptable):
+    - M1 active (mode-design):  ``mode-author`` IS in registry (mounted, refcount 0→1).
+    - M2 active (test-overlap-mode), M1 cleared:
+        During the switch, mode-author may briefly unmount (refcount 1→0) then
+        remount (refcount 0→1) — this churn is acceptable in v1 and documented
+        in design §7.  The test only asserts the END STATE: mode-author IS
+        present after M2 is fully activated.
+    - Both modes inactive (M2 cleared):  ``mode-author`` is NOT in registry
+        (refcount back to 0, unmount gate crossed, removed from registry).
+    """
+    from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks
+
+    # Session baseline: empty — mode-author not present at session level.
+    coord = _make_coordinator(agents={})
+
+    # Build discovery pointing at BOTH the real modes directory AND the test
+    # fixtures directory so that test-overlap-mode.md is discoverable.
+    discovery = ModeDiscovery(search_paths=[MODES_DIR, FIXTURES_DIR])
+    hooks = ModeHooks(coord, discovery)
+
+    # ------------------------------------------------------------------ #
+    # Activate M1: /mode-design                                           #
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = "mode-design"
+    await hooks.handle_mode_activated("mode:activated", {"mode": "mode-design"})
+
+    reg = _agent_registry(coord)
+
+    # Assertion 1 (S3: M1 active → mode-author mounted)
+    assert "mode-author" in reg, (
+        "S3: mode-author must be in registry after /mode-design activation "
+        "(M1 active → mode-author mounted, refcount 0→1)"
+    )
+
+    # ------------------------------------------------------------------ #
+    # Switch to M2: test-overlap-mode                                     #
+    # Deactivate M1 (cleared), then activate M2.                          #
+    # v1 may briefly unmount/remount mode-author during the transition;   #
+    # the test only checks the end state after M2 is fully active.        #
+    # ------------------------------------------------------------------ #
+    await hooks.handle_mode_cleared("mode:cleared", {"name": "mode-design"})
+    coord.session_state["active_mode"] = "test-overlap-mode"
+    await hooks.handle_mode_activated("mode:activated", {"mode": "test-overlap-mode"})
+
+    reg = _agent_registry(coord)
+
+    # Assertion 2 (S3: M2 active → mode-author mounted, end-state check)
+    assert "mode-author" in reg, (
+        "S3: mode-author must be in registry after switching to test-overlap-mode "
+        "(M2 active → mode-author mounted; v1 unmount/remount churn is acceptable, "
+        "but end state must show agent present)"
+    )
+
+    # ------------------------------------------------------------------ #
+    # Deactivate M2: both modes now inactive                              #
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = None
+    await hooks.handle_mode_cleared("mode:cleared", {"name": "test-overlap-mode"})
+
+    reg = _agent_registry(coord)
+
+    # Assertion 3 (S3: both M1 and M2 inactive → mode-author unmounted)
+    assert "mode-author" not in reg, (
+        "S3: mode-author must be absent after both modes deactivated "
+        "(both M1 and M2 inactive → mode-author unmounted, refcount 1→0)"
+    )
