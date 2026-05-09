@@ -744,8 +744,21 @@ class ModeHooks:
         overlay = self.coordinator.session_state.get("mode_runtime_overlay")
         if overlay is None:
             from amplifier_foundation import RuntimeOverlay
+            from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
 
-            overlay = RuntimeOverlay(self.coordinator)
+            # TODO(Phase 3 de-dup): The overlay emits MODE_TRANSITION_COMPLETED /
+            # MODE_ACTIVATION_FAILED on every apply/revoke.  The three handler
+            # methods (handle_mode_activated, handle_mode_changed,
+            # handle_mode_cleared) ALSO emit those same events directly, producing
+            # duplicate events on the bus — one from the overlay and one from the
+            # handler.  Two options for Phase 3 cleanup:
+            #   (a) remove the handlers' manual emits (overlay already covers them)
+            #   (b) make overlay's success/failure events optional (Phase 1 follow-up)
+            overlay = RuntimeOverlay(
+                self.coordinator,
+                success_event=MODE_TRANSITION_COMPLETED,
+                failure_event=MODE_ACTIVATION_FAILED,
+            )
             self.coordinator.session_state["mode_runtime_overlay"] = overlay
         return overlay
 

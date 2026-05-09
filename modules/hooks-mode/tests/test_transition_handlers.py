@@ -318,3 +318,31 @@ async def test_mount_registers_three_transition_handlers(tmp_path: Path) -> None
     assert registered_events.get("mode-overlay-activate") == "mode:activated"
     assert registered_events.get("mode-overlay-change") == "mode:changed"
     assert registered_events.get("mode-overlay-clear") == "mode:cleared"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — cross-phase contract drift (Bug 1 & Bug 2)
+# ---------------------------------------------------------------------------
+
+
+def test_overlay_constructor_signature(tmp_path: Path) -> None:
+    """_get_or_create_overlay constructs a real RuntimeOverlay without TypeError.
+
+    Regression test for Bug 1: RuntimeOverlay.__init__ requires success_event
+    and failure_event as keyword-only arguments.  Calling
+    RuntimeOverlay(coordinator) — without those kwargs — raises TypeError the
+    first time a real mode activates.  This test uses the real class (not a
+    MagicMock) so the missing-kwarg error is visible.
+    """
+    from amplifier_foundation import RuntimeOverlay
+
+    coordinator = _make_coordinator()
+    discovery = ModeDiscovery(search_paths=[tmp_path])
+    hooks = ModeHooks(coordinator, discovery)
+
+    # Must not raise TypeError
+    overlay = hooks._get_or_create_overlay()
+
+    stored = coordinator.session_state.get("mode_runtime_overlay")
+    assert isinstance(stored, RuntimeOverlay)
+    assert overlay is stored  # same object returned
