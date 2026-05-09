@@ -427,8 +427,17 @@ class ModeDiscovery:
 
         return None
 
-    def list_modes(self) -> list[tuple[str, str, str]]:
-        """List all available modes as (name, description, source) tuples."""
+    def list_modes(
+        self, include_unadvertised: bool = False
+    ) -> list[tuple[str, str, str]]:
+        """List available modes as (name, description, source) tuples.
+
+        Args:
+            include_unadvertised: If False (default), modes with `advertised: false`
+                are excluded from the result — this is the LLM-facing listing.
+                If True, all modes are returned — used by human-facing surfaces
+                (e.g. the CLI's `/modes --all`).
+        """
         self._ensure_bundle_discovery()
         modes: dict[str, tuple[str, str]] = {}
 
@@ -440,6 +449,8 @@ class ModeDiscovery:
                 if name not in modes:  # First match wins (precedence)
                     mode_def = parse_mode_file(mode_file)
                     if mode_def:
+                        if not include_unadvertised and not mode_def.advertised:
+                            continue
                         mode_def.source = source_label
                         modes[name] = (mode_def.description, source_label)
                         self._cache[name] = mode_def
