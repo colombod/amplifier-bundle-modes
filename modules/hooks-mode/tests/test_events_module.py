@@ -31,8 +31,8 @@ def test_all_events_is_list() -> None:
 
 
 def test_all_events_length() -> None:
-    """ALL_EVENTS must contain exactly 3 events."""
-    assert len(ALL_EVENTS) == 3
+    """ALL_EVENTS must contain exactly 5 events (3 original + 2 added in Phase 2)."""
+    assert len(ALL_EVENTS) == 5
 
 
 def test_all_events_contains_mode_tool_blocked() -> None:
