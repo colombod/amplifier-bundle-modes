@@ -572,3 +572,124 @@ async def test_S4_session_plus_two_modes() -> None:
     coord.session_state["active_mode"] = None
     await hooks.handle_mode_cleared("mode:cleared", {"name": "test-overlap-mode"})
     _assert_session_instance()
+
+
+# ---------------------------------------------------------------------------
+# Rollback — activation fails partway through; coordinator returns to
+# pre-activation state atomically
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_contribution_failure_rollback(tmp_path: Path) -> None:
+    """Atomic rollback on contribution failure.
+
+    Scenario:
+    - A mode 'broken-overlap' contributes two agents:
+      - mode-author: valid source ``@modes:agents/mode-author``
+      - this-does-not-exist: deliberately broken (bare string value, not a
+        nested dict), so ``RuntimeOverlay._normalise_agents`` raises a
+        ``ValueError`` when it encounters the entry.
+
+    Expected behaviour (Phase 1 atomic-apply guarantees):
+    - The overlay must roll back every item it touched in that transition so
+      that the coordinator is left in its pre-activation state.
+    - handle_mode_activated must clear ``active_mode`` after a failed apply,
+      preventing the session from being stuck in a half-activated mode.
+    - MODE_ACTIVATION_FAILED (or an equivalent event whose name contains
+      'activation_failed') must be emitted so that callers can observe the
+      failure.
+
+    Phase 1 gap note:
+      If RuntimeOverlay does not implement atomic rollback, this is a
+      Phase 1 gap — stop and fix in Phase 1, not Phase 3.
+    """
+
+    from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks
+
+    # ------------------------------------------------------------------ #
+    # Build the broken-overlap fixture in a temp directory                #
+    # ------------------------------------------------------------------ #
+    bad_mode_dir = tmp_path / "bad-modes"
+    bad_mode_dir.mkdir()
+
+    broken_mode_file = bad_mode_dir / "broken-overlap.md"
+    broken_mode_file.write_text(
+        textwrap.dedent("""\
+            ---
+            mode:
+              name: broken-overlap
+              shortcut: false
+              advertised: false
+              default_action: block
+              tools:
+                safe:
+                  - delegate
+                  - mode
+              contributes:
+                agents:
+                  mode-author:
+                    source: "@modes:agents/mode-author"
+                  this-does-not-exist: "@modes:agents/this-does-not-exist"
+            ---
+
+            Broken on purpose.
+        """),
+        encoding="utf-8",
+    )
+
+    # ------------------------------------------------------------------ #
+    # Build coordinator (empty baseline), discovery, hooks                #
+    # ------------------------------------------------------------------ #
+    coord = _make_coordinator(agents={})
+
+    # Include both the shipped modes dir AND the broken fixture dir so that
+    # both mode-author (from mode-design.md) and broken-overlap are visible.
+    discovery = ModeDiscovery(search_paths=[MODES_DIR, bad_mode_dir])
+    hooks = ModeHooks(coord, discovery)
+
+    # ------------------------------------------------------------------ #
+    # Trigger activation — expected to fail                               #
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = "broken-overlap"
+    await hooks.handle_mode_activated("mode:activated", {"mode": "broken-overlap"})
+
+    # ------------------------------------------------------------------ #
+    # Assertion 1: failed activation must clear active_mode               #
+    # ------------------------------------------------------------------ #
+    active = coord.session_state.get("active_mode")
+    assert active in (None, ""), (
+        f"Failed activation must clear active_mode but got {active!r}. "
+        "handle_mode_activated must set active_mode to None/'' when "
+        "overlay.apply() returns success=False, so the session is not "
+        "stuck in a half-activated mode state."
+    )
+
+    # ------------------------------------------------------------------ #
+    # Assertion 2: atomic rollback — mode-author must NOT be in registry  #
+    # ------------------------------------------------------------------ #
+    assert "mode-author" not in _agent_registry(coord), (
+        "'mode-author' must NOT be in the agent registry after a failed activation. "
+        "Atomic rollback: every item mounted before the failure must be unmounted "
+        "so the coordinator returns to its pre-activation baseline. "
+        f"Registry contents: {list(_agent_registry(coord).keys())}"
+    )
+
+    # ------------------------------------------------------------------ #
+    # Assertion 3: MODE_ACTIVATION_FAILED (or equivalent) must be emitted #
+    # ------------------------------------------------------------------ #
+    emit_calls = coord.hooks.emit.await_args_list
+    failed_events = [
+        call
+        for call in emit_calls
+        if call.args and "activation_failed" in str(call.args[0]).lower()
+    ]
+    all_events_seen = [
+        call.args[0] if call.args else "<no-args>" for call in emit_calls
+    ]
+    assert failed_events, (
+        "MODE_ACTIVATION_FAILED (or an event whose name contains "
+        "'activation_failed') must be emitted when overlay.apply() fails "
+        "and rolls back. All events seen in this test run: "
+        f"{all_events_seen}"
+    )

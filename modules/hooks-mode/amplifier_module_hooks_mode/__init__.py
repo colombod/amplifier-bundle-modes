@@ -765,11 +765,11 @@ class ModeHooks:
     async def handle_mode_activated(self, _event: str, data: dict) -> "HookResult":
         """Apply the activated mode's contributions via RuntimeOverlay.
 
-        On any failure: emit mode:activation_failed with the error message and
-        return continue (the mode is still active for context-injection
-        purposes; only the contributions failed). The RuntimeOverlay primitive
-        is responsible for atomic rollback within itself; the handler's job is
-        to dispatch and report.
+        On any failure (either overlay.apply() returning success=False, or an
+        unexpected exception): clear active_mode so the session is not stuck in
+        a half-activated state, emit mode:activation_failed, and return
+        continue.  The RuntimeOverlay primitive handles atomic rollback of any
+        partial contributions it applied before the failure.
         """
         from amplifier_core.models import HookResult
         from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
@@ -784,7 +784,15 @@ class ModeHooks:
             mode_def = self.discovery.find(mode_name)
             if mode_def and mode_def.contributes:
                 overlay = self._get_or_create_overlay()
-                await overlay.apply(f"mode:{mode_name}", mode_def.contributes)
+                apply_result = await overlay.apply(
+                    f"mode:{mode_name}", mode_def.contributes
+                )
+                if not apply_result.success:
+                    # The overlay already rolled back partial contributions and
+                    # emitted MODE_ACTIVATION_FAILED via its _emit method.
+                    # Clear active_mode so the session reflects the failure.
+                    self.coordinator.session_state["active_mode"] = None
+                    return HookResult(action="continue")
 
             await self.coordinator.hooks.emit(
                 MODE_TRANSITION_COMPLETED,
@@ -797,6 +805,9 @@ class ModeHooks:
                 exc,
                 exc_info=True,
             )
+            # Clear active_mode on unexpected exceptions too — the activation
+            # did not complete successfully.
+            self.coordinator.session_state["active_mode"] = None
             await self.coordinator.hooks.emit(
                 MODE_ACTIVATION_FAILED,
                 {"mode": mode_name, "error": str(exc)},
