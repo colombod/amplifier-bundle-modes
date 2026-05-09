@@ -735,6 +735,64 @@ class ModeHooks:
             )
             return HookResult(action="deny")
 
+    def _get_or_create_overlay(self) -> Any:
+        """Get the singleton RuntimeOverlay for this session, creating it lazily.
+
+        Stored in session_state so it survives across activations and
+        deactivations within a single session, keeping refcounts coherent.
+        """
+        overlay = self.coordinator.session_state.get("mode_runtime_overlay")
+        if overlay is None:
+            from amplifier_foundation import RuntimeOverlay
+
+            overlay = RuntimeOverlay(self.coordinator)
+            self.coordinator.session_state["mode_runtime_overlay"] = overlay
+        return overlay
+
+    async def handle_mode_activated(
+        self, _event: str, data: dict
+    ) -> "HookResult":
+        """Apply the activated mode's contributions via RuntimeOverlay.
+
+        On any failure: emit mode:activation_failed with the error message and
+        return continue (the mode is still active for context-injection
+        purposes; only the contributions failed). The RuntimeOverlay primitive
+        is responsible for atomic rollback within itself; the handler's job is
+        to dispatch and report.
+        """
+        from amplifier_core.models import HookResult
+        from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
+
+        mode_name = data.get("name") or self.coordinator.session_state.get(
+            "active_mode"
+        )
+        if not mode_name:
+            return HookResult(action="continue")
+
+        try:
+            mode_def = self.discovery.find(mode_name)
+            if mode_def and mode_def.contributes:
+                overlay = self._get_or_create_overlay()
+                overlay.apply(f"mode:{mode_name}", mode_def.contributes)
+
+            await self.coordinator.hooks.emit(
+                MODE_TRANSITION_COMPLETED,
+                {"mode": mode_name, "phase": "activated"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "handle_mode_activated: overlay apply failed for mode '%s': %s",
+                mode_name,
+                exc,
+                exc_info=True,
+            )
+            await self.coordinator.hooks.emit(
+                MODE_ACTIVATION_FAILED,
+                {"mode": mode_name, "error": str(exc)},
+            )
+
+        return HookResult(action="continue")
+
     def reset_warnings(self) -> None:
         """Reset warned tools and context-injected hash (called when switching modes)."""
         self.warned_tools.clear()
