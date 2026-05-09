@@ -240,3 +240,73 @@ async def test_S1_session_overlap() -> None:
         "/mode-design deactivation must NOT replace the session's mode-author instance. "
         f"Expected id={id(session_agent):#x}, got id={id(reg['mode-author']):#x}"
     )
+
+
+# ---------------------------------------------------------------------------
+# S2 — mode-only: item absent in session, contributed by mode only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_S2_mode_only() -> None:
+    """S2 — mode-only contribution mounts on activate and unmounts on deactivate.
+
+    Scenario:
+    - The session has NO ``mode-author`` in its baseline agent registry.
+    - ``/mode-design`` contributes ``mode-author`` via its ``contributes.agents`` block.
+
+    Expected behaviour:
+    - Before activation: ``mode-author`` must NOT be in the registry (refcount=0).
+    - Activating ``/mode-design`` must MOUNT ``mode-author``.  The RuntimeOverlay
+      sees refcount go 0→1, crossing the mount gate, and adds the agent to
+      ``coordinator.config["agents"]``.
+    - Deactivating ``/mode-design`` must UNMOUNT ``mode-author``.  The RuntimeOverlay
+      decrements refcount 1→0, crossing the unmount gate, and removes the agent
+      from the registry.  After deactivation the registry must be empty again.
+    """
+    from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks
+
+    # Session baseline: no mode-author at session level (empty agent registry).
+    coord = _make_coordinator(agents={})
+
+    # Build discovery pointing at the real bundle modes directory.
+    discovery = ModeDiscovery(search_paths=[MODES_DIR])
+    hooks = ModeHooks(coord, discovery)
+
+    # ------------------------------------------------------------------ #
+    # Pre-activation: mode-author must NOT be in the registry             #
+    # ------------------------------------------------------------------ #
+    assert "mode-author" not in _agent_registry(coord), (
+        "mode-author must be absent before /mode-design activation "
+        "(session has no baseline entry for this agent)"
+    )
+
+    # ------------------------------------------------------------------ #
+    # Activate /mode-design                                                #
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = "mode-design"
+    await hooks.handle_mode_activated("mode:activated", {"mode": "mode-design"})
+
+    reg = _agent_registry(coord)
+
+    # Assertion 1: mode-author must appear in the registry after activation.
+    assert "mode-author" in reg, (
+        "mode-author must be in registry after /mode-design activation "
+        "(S2: contribution must mount on activation, refcount 0→1)"
+    )
+
+    # ------------------------------------------------------------------ #
+    # Deactivate /mode-design                                              #
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = None
+    # NOTE: Phase 2 shipped handler is handle_mode_cleared, not handle_mode_deactivated.
+    # Using the correct name here after wiring verification.
+    await hooks.handle_mode_cleared("mode:cleared", {"name": "mode-design"})
+
+    reg = _agent_registry(coord)
+
+    # Assertion 2: mode-author must disappear from the registry after deactivation.
+    assert "mode-author" not in reg, (
+        "mode-author must be absent after /mode-design deactivation "
+        "(S2: contribution must unmount on deactivation, refcount 1→0)"
+    )
