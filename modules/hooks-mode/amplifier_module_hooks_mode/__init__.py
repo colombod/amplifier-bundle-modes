@@ -987,6 +987,24 @@ async def mount(
         name="mode-tools",
     )
 
+    # Phase 2: register mode-transition handlers that drive RuntimeOverlay
+    # apply/revoke on the lifecycle events emitted by tool-mode.
+    coordinator.hooks.register(
+        "mode:activated",
+        hooks.handle_mode_activated,
+        name="mode-overlay-activate",
+    )
+    coordinator.hooks.register(
+        "mode:changed",
+        hooks.handle_mode_changed,
+        name="mode-overlay-change",
+    )
+    coordinator.hooks.register(
+        "mode:cleared",
+        hooks.handle_mode_cleared,
+        name="mode-overlay-clear",
+    )
+
     # Contribute event catalogue to observability.events channel
     coordinator.register_contributor(
         "observability.events", "bundle-modes:hooks-mode", lambda: ALL_EVENTS

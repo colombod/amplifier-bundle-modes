@@ -284,3 +284,37 @@ async def test_cleared_handler_handles_revoke_error(tmp_path: Path) -> None:
         {"mode": "design", "error": "nope"},
     )
     assert result.action == "continue"
+
+
+@pytest.mark.asyncio
+async def test_mount_registers_three_transition_handlers(tmp_path: Path) -> None:
+    """mount() registers mode-overlay-activate/change/clear handlers on the correct events."""
+    from unittest.mock import MagicMock
+
+    from amplifier_module_hooks_mode import mount
+
+    modes_dir = tmp_path / "modes"
+    modes_dir.mkdir()
+    (modes_dir / "x.md").write_text(
+        "---\nmode:\n  name: x\n  description: x mode\n---\n# X\n",
+        encoding="utf-8",
+    )
+
+    coordinator = _make_coordinator()
+    coordinator.register_contributor = MagicMock()
+
+    await mount(coordinator, {"search_paths": [str(modes_dir)]})
+
+    # Build a mapping: handler name -> event string from all register() calls
+    registered_events: dict[str, str] = {}
+    for call in coordinator.hooks.register.call_args_list:
+        args = call.args
+        kwargs = call.kwargs
+        event = args[0] if args else kwargs.get("event", "")
+        name = kwargs.get("name")
+        if name:
+            registered_events[name] = event
+
+    assert registered_events.get("mode-overlay-activate") == "mode:activated"
+    assert registered_events.get("mode-overlay-change") == "mode:changed"
+    assert registered_events.get("mode-overlay-clear") == "mode:cleared"
