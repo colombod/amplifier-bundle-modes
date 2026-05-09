@@ -393,3 +393,85 @@ async def test_S3_two_modes_same_item() -> None:
         "S3: mode-author must be absent after both modes deactivated "
         "(both M1 and M2 inactive → mode-author unmounted, refcount 1→0)"
     )
+
+
+# ---------------------------------------------------------------------------
+# S4 — session + two modes: session has mode-author; both modes contribute it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_S4_session_plus_two_modes() -> None:
+    """S4 — session + two modes contribute same item; refcount stays >=1 across all transitions.
+
+    Scenario:
+    - The session pre-populates ``mode-author`` in the agent registry (refcount=1
+      from session baseline).
+    - ``/mode-design`` ALSO contributes ``mode-author`` (refcount goes 1→2 on
+      activation, 2→1 on deactivation — unmount gate never crossed).
+    - ``test-overlap-mode`` ALSO contributes ``mode-author`` (same refcount
+      semantics: 1→2 on activation, 2→1 on deactivation).
+
+    Expected behaviour across every transition:
+    - ``mode-author`` must ALWAYS remain in the registry.  The session's baseline
+      contribution keeps the refcount at >=1 even when both modes are inactive.
+    - The session's original agent *instance* must never be replaced.  Any mode
+      activation that finds refcount>=1 must skip the mount call and leave the
+      existing object in place.  Replacing the instance would break in-flight
+      tool-calls holding a reference to the old dict.
+    """
+    from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks
+
+    # Session baseline: mode-author already present with a session-specific marker.
+    # The '_marker' key lets us verify object identity (is-check) after each transition.
+    session_agent: dict = {"source": "session-fake-source", "_marker": "from-session"}
+
+    # Build coordinator with mode-author pre-populated in the agent registry.
+    coord = _make_coordinator(agents={"mode-author": session_agent})
+
+    # Build discovery pointing at BOTH the real modes directory AND the test
+    # fixtures directory so that test-overlap-mode.md is discoverable.
+    discovery = ModeDiscovery(search_paths=[MODES_DIR, FIXTURES_DIR])
+    hooks = ModeHooks(coord, discovery)
+
+    # Helper closure: asserts the session instance is present and never replaced.
+    def _assert_session_instance() -> None:
+        reg = _agent_registry(coord)
+        assert "mode-author" in reg, (
+            "mode-author must remain in registry (S4: session holds refcount>=1 at all times)"
+        )
+        assert reg["mode-author"] is session_agent, (
+            "S4: existing session instance must never be replaced by mode contributions. "
+            f"Expected id={id(session_agent):#x}, got id={id(reg['mode-author']):#x}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Pre-activation: session holds mode-author (refcount=1)              #
+    # ------------------------------------------------------------------ #
+    _assert_session_instance()
+
+    # ------------------------------------------------------------------ #
+    # Activate /mode-design (refcount: 1→2)                               #
+    # mode-author must stay present and instance must be unchanged.       #
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = "mode-design"
+    await hooks.handle_mode_activated("mode:activated", {"mode": "mode-design"})
+    _assert_session_instance()
+
+    # ------------------------------------------------------------------ #
+    # Switch to test-overlap-mode:                                        #
+    #   Deactivate mode-design (refcount: 2→1) — session still holds.    #
+    #   Activate test-overlap-mode (refcount: 1→2).                      #
+    # ------------------------------------------------------------------ #
+    await hooks.handle_mode_cleared("mode:cleared", {"name": "mode-design"})
+    coord.session_state["active_mode"] = "test-overlap-mode"
+    await hooks.handle_mode_activated("mode:activated", {"mode": "test-overlap-mode"})
+    _assert_session_instance()
+
+    # ------------------------------------------------------------------ #
+    # Deactivate test-overlap-mode (refcount: 2→1)                       #
+    # Session still holds mode-author — unmount gate (1→0) never crossed. #
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = None
+    await hooks.handle_mode_cleared("mode:cleared", {"name": "test-overlap-mode"})
+    _assert_session_instance()
