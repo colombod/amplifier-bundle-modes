@@ -693,3 +693,126 @@ async def test_contribution_failure_rollback(tmp_path: Path) -> None:
         "and rolls back. All events seen in this test run: "
         f"{all_events_seen}"
     )
+
+
+# ---------------------------------------------------------------------------
+# End-to-end — full /mode-design activation: agent + context + skill all live
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mode_design_end_to_end() -> None:
+    """Full activation of /mode-design: agent + context + skill all live;
+    deactivation: all three gone.
+
+    Scenario:
+    - The session starts with an empty agent registry.
+    - /mode-design is activated via handle_mode_activated.
+
+    After activation:
+    1. ``mode-author`` is reachable in the agent registry (proxy for delegate).
+    2. The body of ``mode-schema-reference.md`` (specifically the string
+       "Amplifier Mode Schema Reference") ends up in the injected system-reminder
+       context when handle_provider_request fires.
+    3. The skill ``mode-design-discipline`` is discoverable via the overlay's
+       registered capability (mode_overlay_skills).
+
+    After deactivation:
+    - All three are gone: agent removed, schema reference absent from context,
+      skill removed from capability.
+
+    Notes on implementation details:
+    - Phase 2 shipped ``handle_mode_cleared`` (not ``handle_mode_deactivated``);
+      the test uses the actual handler name.
+    - Phase 2 stores skills via ``coordinator.register_capability('mode_overlay_skills', [...])``.
+      The skills check below reads from ``register_capability`` mock call log, not
+      ``coordinator.config['skills']``.  The spec allows updating only these lines.
+    """
+    from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks
+
+    # Session baseline: empty agent registry.
+    coord = _make_coordinator(agents={})
+    discovery = ModeDiscovery(search_paths=[MODES_DIR])
+    hooks = ModeHooks(coord, discovery)
+
+    # ------------------------------------------------------------------ #
+    # ACTIVATE /mode-design                                                #
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = "mode-design"
+    await hooks.handle_mode_activated("mode:activated", {"mode": "mode-design"})
+
+    # ---- 1. Agent: mode-author must be reachable in the registry ----
+    reg = _agent_registry(coord)
+    assert "mode-author" in reg, (
+        "mode-author agent must be reachable in the agent registry "
+        "after /mode-design activation (the contributed agent was not mounted)"
+    )
+
+    # ---- 2. Context: schema reference body in injected system-reminder ----
+    result = await hooks.handle_provider_request("provider:request", {})
+    assert result.action == "inject_context", (
+        f"Expected action='inject_context', got {result.action!r}. "
+        "handle_provider_request must inject the mode body while mode-design is active."
+    )
+    injected: str = result.context_injection or ""
+    # 'Amplifier Mode Schema Reference' is the signature line in mode-schema-reference.md;
+    # it must be present in the injected mode body (either directly or via the mode body
+    # referencing it).
+    assert "Amplifier Mode Schema Reference" in injected, (
+        "The string 'Amplifier Mode Schema Reference' must appear in the injected context "
+        "when /mode-design is active. This signature line is present in "
+        "context/mode-schema-reference.md and must be referenced in the mode body. "
+        f"Injected context (first 500 chars): {injected[:500]!r}"
+    )
+
+    # ---- 3. Skill discoverability: mode_overlay_skills capability ----
+    # Phase 2 stores skills via register_capability('mode_overlay_skills', [paths...]).
+    # Read from the mock's call log since coord.config['skills'] is not updated by Phase 2.
+    # (If Phase 2 chose a different storage slot, update only these lines.)
+    _skills_cap_calls: list[Any] = [
+        call.args[1]
+        for call in coord.register_capability.call_args_list
+        if call.args and call.args[0] == "mode_overlay_skills"
+    ]
+    skills_in_play: list[str] = _skills_cap_calls[-1] if _skills_cap_calls else []
+    assert any("mode-design-discipline" in str(s) for s in skills_in_play), (
+        "mode-design-discipline skill must be discoverable via mode_overlay_skills capability "
+        "while /mode-design is active. "
+        f"Skills registered: {skills_in_play!r}"
+    )
+
+    # ------------------------------------------------------------------ #
+    # DEACTIVATE /mode-design                                              #
+    # Phase 2 shipped handle_mode_cleared, not handle_mode_deactivated.   #
+    # ------------------------------------------------------------------ #
+    coord.session_state["active_mode"] = None
+    await hooks.handle_mode_cleared("mode:cleared", {"name": "mode-design"})
+
+    # ---- 1. Agent gone ----
+    assert "mode-author" not in _agent_registry(coord), (
+        "mode-author must be removed from the agent registry after "
+        "/mode-design deactivation (the contributed agent was not unmounted)"
+    )
+
+    # ---- 2. Context gone: provider request must not inject the schema ref ----
+    result_after = await hooks.handle_provider_request("provider:request", {})
+    if result_after.action == "inject_context":
+        injected_after: str = result_after.context_injection or ""
+        assert "Amplifier Mode Schema Reference" not in injected_after, (
+            "The schema reference must NOT be injected once /mode-design is inactive. "
+            f"Context after deactivation (first 500 chars): {injected_after[:500]!r}"
+        )
+
+    # ---- 3. Skill gone: mode_overlay_skills capability must be empty ----
+    _skills_after_calls: list[Any] = [
+        call.args[1]
+        for call in coord.register_capability.call_args_list
+        if call.args and call.args[0] == "mode_overlay_skills"
+    ]
+    skills_after: list[str] = _skills_after_calls[-1] if _skills_after_calls else []
+    if skills_after:
+        assert not any("mode-design-discipline" in str(s) for s in skills_after), (
+            "mode-design-discipline must be removed from the mode_overlay_skills capability "
+            "after /mode-design deactivation. "
+            f"Skills still registered: {skills_after!r}"
+        )

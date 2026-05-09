@@ -1,4 +1,4 @@
-# Mode YAML Schema Reference
+# Amplifier Mode Schema Reference
 
 > **Contributed by `/mode-design`** — This file is loaded only when `/mode-design` is
 > active. When the mode is off, zero tokens from this document are consumed. That is the

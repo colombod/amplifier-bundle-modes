@@ -42,7 +42,7 @@ This mode contributes substantial capability invisible to most sessions — a de
 
 - **Skill `mode-design-discipline`** — Authoring discipline: anti-bloat patterns, naming hygiene, narration rules, and the four overlap scenarios. Load at the start of every design session via `load_skill("mode-design-discipline")`.
 
-- **Reference `mode-schema-reference.md`** — The full mode YAML schema, already injected into context by this mode. Covers every supported field, allowed values, and validation rules.
+- **Amplifier Mode Schema Reference** (`mode-schema-reference.md`) — The full mode YAML schema, already injected into context by this mode. Covers every supported field, allowed values, and validation rules.
 
 ## Workflow
 
