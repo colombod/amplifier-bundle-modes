@@ -594,7 +594,28 @@ class ModeHooks:
 
         try:
             mode = self._get_active_mode()
-            if not mode or not mode.context:
+            if not mode:
+                # B3 guard: detect session-resume state loss.
+                # mode_runtime_overlay is constructed in-process and stored in
+                # session_state, but session_state is not persisted across
+                # process restarts.  If an overlay exists but active_mode is
+                # None, the process was likely restarted (e.g. amplifier run
+                # --resume) and the active_mode flag was lost.  The overlay
+                # contributions are still registered with the coordinator from
+                # the previous process, but the handler can no longer read
+                # the mode name to inject context.  Log a loud WARNING so the
+                # issue is visible in logs rather than silently missing.
+                if (
+                    self.coordinator.session_state.get("mode_runtime_overlay")
+                    is not None
+                ):
+                    logger.warning(
+                        "Mode runtime overlay exists but active_mode is None — "
+                        "possible session-resume state loss. "
+                        "Mode contributions will not be injected this turn."
+                    )
+                return HookResult(action="continue")
+            if not mode.context:
                 return HookResult(action="continue")
 
             # Resolve any @namespace:path mentions in the mode body before injection
