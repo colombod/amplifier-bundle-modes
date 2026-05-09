@@ -669,16 +669,16 @@ Do NOT:
 
 Output format:
 ```
-## Structure
+#### Structure
 [Directory/module overview]
 
-## Key Files
+#### Key Files
 - path/file.py: Purpose
 
-## Flow
+#### Flow
 [How data/control flows]
 
-## Notes
+#### Notes
 [Observations, patterns, concerns]
 ```
 
@@ -1024,8 +1024,7 @@ lower-risk operations. Read tools should always be `safe`.
 
 **What it looks like:**
 ```yaml
-allow_clear: false
-# No allowed_transitions — user is trapped
+allow_clear: false  # no allowed_transitions — user is trapped
 ```
 
 **Why it's wrong.** The user cannot exit without restarting the session. Always provide
