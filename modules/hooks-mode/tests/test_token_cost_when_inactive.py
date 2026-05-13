@@ -44,9 +44,11 @@ import pytest
 BUNDLE_ROOT: Path = Path(__file__).resolve().parents[3]
 MODES_DIR: Path = BUNDLE_ROOT / "modes"
 
-# Capability names used by RuntimeOverlay
-_CAP_CONTEXT = "mode_overlay_context"
-_CAP_SKILLS = "mode_overlay_skills"
+# Capability names used by RuntimeOverlay (producer-neutral names after rename)
+from amplifier_foundation import (
+    RUNTIME_CONTEXT_OVERLAY_CAPABILITY as _CAP_CONTEXT,
+    RUNTIME_SKILL_OVERLAY_CAPABILITY as _CAP_SKILLS,
+)
 
 
 # ---------------------------------------------------------------------------

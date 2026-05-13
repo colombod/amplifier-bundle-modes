@@ -653,14 +653,16 @@ class ModeHooks:
             # Resolve any @namespace:path mentions in the mode body before injection
             resolved_context = self._resolve_mentions(mode.context)
 
-            # Inject files declared in contributes.context (mode_overlay_context
+            # Inject files declared in contributes.context (runtime_context_overlay
             # capability is populated by RuntimeOverlay.apply on activation).
             # Injection order: contributed-context first, then mode body — all
             # wrapped in one <system-reminder> block so the LLM sees a single
             # coherent context chunk rather than interleaved fragments.
+            from amplifier_foundation import RUNTIME_CONTEXT_OVERLAY_CAPABILITY
+
             contributed_content = ""
             context_paths: list[str] = (
-                self.coordinator.get_capability("mode_overlay_context") or []
+                self.coordinator.get_capability(RUNTIME_CONTEXT_OVERLAY_CAPABILITY) or []
             )
             if context_paths:
                 # Build a newline-separated block of @-mentions; _resolve_mentions
