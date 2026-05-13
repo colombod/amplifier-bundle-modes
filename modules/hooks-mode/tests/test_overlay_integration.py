@@ -707,7 +707,7 @@ async def test_mode_design_end_to_end() -> None:
        "Amplifier Mode Schema Reference") ends up in the injected system-reminder
        context when handle_provider_request fires.
     3. The skill ``mode-design-discipline`` is discoverable via the overlay's
-       registered capability (mode_overlay_skills).
+       registered capability (runtime_skill_overlay).
 
     After deactivation:
     - All three are gone: agent removed, schema reference absent from context,
@@ -716,7 +716,7 @@ async def test_mode_design_end_to_end() -> None:
     Notes on implementation details:
     - Phase 2 shipped ``handle_mode_cleared`` (not ``handle_mode_deactivated``);
       the test uses the actual handler name.
-    - Phase 2 stores skills via ``coordinator.register_capability('mode_overlay_skills', [...])``.
+    - Phase 2 stores skills via ``coordinator.register_capability('runtime_skill_overlay', [...])``.
       The skills check below reads from ``register_capability`` mock call log, not
       ``coordinator.config['skills']``.  The spec allows updating only these lines.
     """
@@ -757,18 +757,19 @@ async def test_mode_design_end_to_end() -> None:
         f"Injected context (first 500 chars): {injected[:500]!r}"
     )
 
-    # ---- 3. Skill discoverability: mode_overlay_skills capability ----
-    # Phase 2 stores skills via register_capability('mode_overlay_skills', [paths...]).
+    # ---- 3. Skill discoverability: runtime_skill_overlay capability ----
+    # RuntimeOverlay stores skills via register_capability('runtime_skill_overlay', [paths...]).
     # Read from the mock's call log since coord.config['skills'] is not updated by Phase 2.
-    # (If Phase 2 chose a different storage slot, update only these lines.)
+    from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
+
     _skills_cap_calls: list[Any] = [
         call.args[1]
         for call in coord.register_capability.call_args_list
-        if call.args and call.args[0] == "mode_overlay_skills"
+        if call.args and call.args[0] == RUNTIME_SKILL_OVERLAY_CAPABILITY
     ]
     skills_in_play: list[str] = _skills_cap_calls[-1] if _skills_cap_calls else []
     assert any("mode-design-discipline" in str(s) for s in skills_in_play), (
-        "mode-design-discipline skill must be discoverable via mode_overlay_skills capability "
+        "mode-design-discipline skill must be discoverable via runtime_skill_overlay capability "
         "while /mode-design is active. "
         f"Skills registered: {skills_in_play!r}"
     )
@@ -795,23 +796,23 @@ async def test_mode_design_end_to_end() -> None:
             f"Context after deactivation (first 500 chars): {injected_after[:500]!r}"
         )
 
-    # ---- 3. Skill gone: mode_overlay_skills capability must be empty ----
+    # ---- 3. Skill gone: runtime_skill_overlay capability must be empty ----
     _skills_after_calls: list[Any] = [
         call.args[1]
         for call in coord.register_capability.call_args_list
-        if call.args and call.args[0] == "mode_overlay_skills"
+        if call.args and call.args[0] == RUNTIME_SKILL_OVERLAY_CAPABILITY
     ]
     skills_after: list[str] = _skills_after_calls[-1] if _skills_after_calls else []
     if skills_after:
         assert not any("mode-design-discipline" in str(s) for s in skills_after), (
-            "mode-design-discipline must be removed from the mode_overlay_skills capability "
+            "mode-design-discipline must be removed from the runtime_skill_overlay capability "
             "after /mode-design deactivation. "
             f"Skills still registered: {skills_after!r}"
         )
 
 
 # ---------------------------------------------------------------------------
-# M3 — contributes.context auto-injection via mode_overlay_context consumer
+# M3 — contributes.context auto-injection via runtime_context_overlay consumer
 # ---------------------------------------------------------------------------
 
 
@@ -823,7 +824,7 @@ async def test_contributes_context_auto_injected(tmp_path: Path) -> None:
     Scenario:
     - A mode is active with body text that does NOT reference the contributed
       context file.
-    - The coordinator's ``mode_overlay_context`` capability holds the path to
+    - The coordinator's ``runtime_context_overlay`` capability holds the path to
       that file (set by RuntimeOverlay.apply during activation).
     - ``handle_provider_request`` is called.
 
@@ -831,7 +832,7 @@ async def test_contributes_context_auto_injected(tmp_path: Path) -> None:
     - The contributed context file's content appears in the injected
       ``<system-reminder>`` block, prepended before the mode body.
     - This proves that ``handle_provider_request`` consumes
-      ``mode_overlay_context`` directly rather than relying solely on inline
+      ``runtime_context_overlay`` directly rather than relying solely on inline
       ``@``-mentions in the mode body.
     """
     from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks
@@ -874,9 +875,11 @@ async def test_contributes_context_auto_injected(tmp_path: Path) -> None:
 
     # ------------------------------------------------------------------ #
     # Build coordinator with capabilities set as RuntimeOverlay would after
-    # activation: mode_overlay_context holds the path list, and a mention
+    # activation: runtime_context_overlay holds the path list, and a mention
     # resolver knows how to read the file.
     # ------------------------------------------------------------------ #
+    from amplifier_foundation import RUNTIME_CONTEXT_OVERLAY_CAPABILITY
+
     coord = _make_coordinator(active_mode="ctx-test-mode", agents={})
 
     # Mention resolver: maps any @-mention to ctx_file for this test
@@ -886,7 +889,7 @@ async def test_contributes_context_auto_injected(tmp_path: Path) -> None:
     contributed_paths = ["@test:context/contributed.md"]
 
     def _cap_side_effect(cap_name: str) -> Any:
-        if cap_name == "mode_overlay_context":
+        if cap_name == RUNTIME_CONTEXT_OVERLAY_CAPABILITY:
             return contributed_paths
         if cap_name == "mention_resolver":
             return resolver
@@ -911,7 +914,7 @@ async def test_contributes_context_auto_injected(tmp_path: Path) -> None:
     assert "CONTRIBUTED-CONTEXT-MARKER" in injected, (
         "The contributed context file's content must appear in the injected "
         "<system-reminder> even when the mode body does not @-mention it. "
-        "handle_provider_request must consume mode_overlay_context and prepend "
+        "handle_provider_request must consume runtime_context_overlay and prepend "
         "the resolved file contents before the mode body. "
         f"Injected context (first 500 chars): {injected[:500]!r}"
     )
