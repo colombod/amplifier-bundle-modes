@@ -116,7 +116,9 @@ def parse_mode_file(file_path: Path) -> ModeDefinition | None:
     # Parse YAML frontmatter
     frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", content, re.DOTALL)
     if not frontmatter_match:
-        logger.warning(f"Mode file {file_path} missing YAML frontmatter")
+        logger.debug(
+            f"Mode file {file_path} missing YAML frontmatter — not a mode file, skipping"
+        )
         return None
 
     yaml_content = frontmatter_match.group(1)
@@ -129,7 +131,9 @@ def parse_mode_file(file_path: Path) -> ModeDefinition | None:
         return None
 
     if not parsed or "mode" not in parsed:
-        logger.warning(f"Mode file {file_path} missing 'mode:' section")
+        logger.debug(
+            f"Mode file {file_path} has no 'mode:' section — not a mode file, skipping"
+        )
         return None
 
     mode_config = parsed["mode"]

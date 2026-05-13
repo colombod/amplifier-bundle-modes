@@ -165,7 +165,9 @@ class TestModeDiscoverySkipsNonModes:
         names = [name for name, _desc, _source in results]
         assert "plan" in names, "Valid mode 'plan' should appear in list_modes()"
         assert "README" not in names, "README.md must not appear as a mode"
-        assert "misc" not in names, "misc.md (no mode: section) must not appear as a mode"
+        assert "misc" not in names, (
+            "misc.md (no mode: section) must not appear as a mode"
+        )
 
     def test_no_warning_logs_during_discovery(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -200,9 +202,7 @@ class TestModeDiscoverySkipsNonModes:
         with caplog.at_level(logging.DEBUG, logger="amplifier_module_hooks_mode"):
             parse_mode_file(readme)
 
-        readme_records = [
-            r for r in caplog.records if str(readme) in r.getMessage()
-        ]
+        readme_records = [r for r in caplog.records if str(readme) in r.getMessage()]
         for r in readme_records:
             assert r.levelno <= logging.DEBUG, (
                 f"Expected at most DEBUG for README.md but got {r.levelname}: {r.getMessage()}"
