@@ -249,94 +249,86 @@ async def test_S1_session_overlap() -> None:
 
 @pytest.mark.asyncio
 async def test_advertised_false_filtering() -> None:
-    """mode-design is advertised:false — hidden from LLM listings, visible to humans.
+    """mode-design is advertised:false — carries the flag for consumer-side filtering.
+
+    After the mechanism/policy split, list_modes() always returns ALL modes.
+    The .advertised field carries the metadata; consumers (tool-mode, CLI) decide
+    what to show based on that field.
 
     Scenario:
     - mode-design.md has ``advertised: false`` in its YAML frontmatter.
     - plan, careful, and explore are advertised (default: advertised: true).
 
     Expected behaviour:
-    - ModeDiscovery.list_modes(include_unadvertised=False) must NOT include
-      mode-design.  This is the LLM-facing listing — unadvertised modes are
-      internal-only and must never be surfaced to the model.
-    - ModeDiscovery.list_modes(include_unadvertised=True) MUST include
-      mode-design.  Human-facing surfaces (e.g. ``/modes --all`` in the CLI)
-      should expose every mode so operators can inspect the full catalogue.
-    - The tool-mode mode(list) operation calls list_modes() with no kwargs
-      (default: include_unadvertised=False), so its output must also exclude
-      mode-design.  This is verified by comparing the no-args call to the
-      explicit False call.
-    - plan, careful, and explore must appear in BOTH listing variants — they
-      are the canonical advertised modes and must always be reachable.
-
-    Guard clause:
-    - If list_modes() does not accept include_unadvertised, Phase 2 is not
-      complete.  The TypeError from the unknown keyword argument will cause
-      this test to error, signalling that the discovery filter must be
-      implemented before this test can pass.
+    - list_modes() ALWAYS includes mode-design; no filtering at the discovery layer.
+    - mode-design has ModeListing.advertised == False.
+    - plan/careful/explore have ModeListing.advertised == True.
+    - Consumer-side LLM filter (filter(lambda e: e.advertised, ...)) excludes
+      mode-design — demonstrating the policy lives in the consumer, not the mechanism.
+    - Passing include_unadvertised kwarg still works (for backward compat) but emits
+      DeprecationWarning.
     """
+    import warnings
+
     from amplifier_module_hooks_mode import ModeDiscovery
 
     # Point discovery at the real bundle modes directory.
     discovery = ModeDiscovery(search_paths=[MODES_DIR])
 
     # ------------------------------------------------------------------ #
-    # LLM-facing listing: include_unadvertised=False (the default)        #
+    # list_modes() returns ALL modes including unadvertised               #
     # ------------------------------------------------------------------ #
-    llm_visible = discovery.list_modes(include_unadvertised=False)
-    llm_visible_names = {entry[0] for entry in llm_visible}
+    all_modes = discovery.list_modes()
+    all_names = {entry.name for entry in all_modes}
+
+    assert "mode-design" in all_names, (
+        "list_modes() must return ALL modes including unadvertised ones. "
+        "mode-design (advertised:false) must be in the full listing."
+    )
+
+    # ------------------------------------------------------------------ #
+    # .advertised field accurately reflects frontmatter                  #
+    # ------------------------------------------------------------------ #
+    entries_by_name = {entry.name: entry for entry in all_modes}
+
+    assert entries_by_name["mode-design"].advertised is False, (
+        "mode-design must have .advertised == False in its ModeListing entry."
+    )
+
+    # Canonical advertised modes must be present with advertised=True
+    for mode_name in ("plan", "careful", "explore"):
+        assert mode_name in entries_by_name, (
+            f"Canonical mode '{mode_name}' must appear in list_modes()."
+        )
+        assert entries_by_name[mode_name].advertised is True, (
+            f"Mode '{mode_name}' must have .advertised == True."
+        )
+
+    # ------------------------------------------------------------------ #
+    # Consumer-side LLM filter excludes mode-design                      #
+    # ------------------------------------------------------------------ #
+    llm_visible_names = {entry.name for entry in all_modes if entry.advertised}
 
     assert "mode-design" not in llm_visible_names, (
-        "advertised:false mode 'mode-design' must NOT appear in the LLM-facing "
-        "listing (include_unadvertised=False).  The LLM must never see internal-only "
-        "modes; they are surfaced only via human-facing /modes --all."
+        "Consumer-side filter on .advertised must exclude mode-design from "
+        "LLM-facing listings."
     )
-
-    # ------------------------------------------------------------------ #
-    # Human-facing listing: include_unadvertised=True                     #
-    # ------------------------------------------------------------------ #
-    human_visible = discovery.list_modes(include_unadvertised=True)
-    human_visible_names = {entry[0] for entry in human_visible}
-
-    assert "mode-design" in human_visible_names, (
-        "advertised:false mode 'mode-design' MUST appear when include_unadvertised=True. "
-        "Human-facing surfaces need full visibility into every mode in the catalogue, "
-        "including internal-only ones."
-    )
-
-    # ------------------------------------------------------------------ #
-    # tool-mode mode(list) operation uses list_modes() with no kwargs     #
-    # Verify the no-args call matches include_unadvertised=False exactly. #
-    # ------------------------------------------------------------------ #
-    default_visible = discovery.list_modes()
-    default_visible_names = {entry[0] for entry in default_visible}
-
-    assert "mode-design" not in default_visible_names, (
-        "tool-mode calls discovery.list_modes() with no args.  "
-        "The default (include_unadvertised=False) must also hide mode-design, "
-        "ensuring the tool-mode list operation never surfaces unadvertised modes."
-    )
-
-    # The two LLM-facing calls should agree
-    assert default_visible_names == llm_visible_names, (
-        "list_modes() with no args must produce the same set as "
-        "list_modes(include_unadvertised=False).  "
-        f"no-args={default_visible_names!r}, explicit-False={llm_visible_names!r}"
-    )
-
-    # ------------------------------------------------------------------ #
-    # Canonical advertised modes: plan / careful / explore                #
-    # Must appear in BOTH listings.                                       #
-    # ------------------------------------------------------------------ #
     for mode_name in ("plan", "careful", "explore"):
         assert mode_name in llm_visible_names, (
-            f"Advertised mode '{mode_name}' must appear in the LLM-facing listing "
-            f"(include_unadvertised=False).  Found: {sorted(llm_visible_names)}"
+            f"Advertised mode '{mode_name}' must survive the consumer filter."
         )
-        assert mode_name in human_visible_names, (
-            f"Advertised mode '{mode_name}' must appear in the human-facing listing "
-            f"(include_unadvertised=True).  Found: {sorted(human_visible_names)}"
-        )
+
+    # ------------------------------------------------------------------ #
+    # Deprecated include_unadvertised kwarg emits DeprecationWarning     #
+    # ------------------------------------------------------------------ #
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        discovery.list_modes(include_unadvertised=False)
+
+    deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+    assert len(deprecations) == 1, (
+        "Passing include_unadvertised kwarg must emit exactly one DeprecationWarning."
+    )
 
 
 # ---------------------------------------------------------------------------
