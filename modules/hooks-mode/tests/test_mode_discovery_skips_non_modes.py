@@ -162,7 +162,7 @@ class TestModeDiscoverySkipsNonModes:
         discovery = ModeDiscovery(search_paths=[tmp_path])
         results = discovery.list_modes()
 
-        names = [name for name, _desc, _source in results]
+        names = [entry.name for entry in results]
         assert "plan" in names, "Valid mode 'plan' should appear in list_modes()"
         assert "README" not in names, "README.md must not appear as a mode"
         assert "misc" not in names, (

@@ -85,7 +85,7 @@ class TestSourceBasePaths:
 
         discovery = ModeDiscovery(search_paths=[], coordinator=coordinator)
         modes = discovery.list_modes()
-        names = [n for n, _desc, _source in modes]
+        names = [entry.name for entry in modes]
         assert "from-a" in names
         assert "from-b" in names
 

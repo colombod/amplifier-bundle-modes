@@ -28,13 +28,34 @@ Mode off: plan
 
 ## Built-in Modes
 
-| Mode | Description |
-|------|-------------|
-| `explore` | Zero-footprint codebase exploration |
-| `plan` | Analysis and planning without implementation |
-| `careful` | Full capability with user confirmation for destructive actions |
+Any mode can be overridden by placing a file with the same `name:` value in a higher-precedence location:
 
-See `modes/*.md` for full definitions.
+- **Project-level override:** `.amplifier/modes/` in the project root
+- **User-level override:** `~/.amplifier/modes/` in your home directory
+
+| Mode | Shortcut | Description | Advertised to LLM |
+|------|----------|-------------|-------------------|
+| `plan` | `/plan` | Analyze, strategize, and organize — no implementation | Yes |
+| `careful` | `/careful` | Full capability with confirmation for destructive actions | Yes |
+| `explore` | `/explore` | Zero-footprint codebase exploration — read-only | Yes |
+| `mode-design` | `/mode-design` | Design a new Amplifier mode through structured authoring | **No** — hidden from LLM; activate via slash command |
+
+### Modes with `advertised: false`
+
+`mode-design` carries `advertised: false` in its frontmatter. This means:
+
+- The LLM does **not** see it in the `mode(list)` tool output, so it will not spontaneously suggest or list it.
+- It **does** appear in the human-facing `/modes` listing (marked `(hidden)`), and its slash command `/mode-design` is fully registered.
+
+Activating `/mode-design` materializes three artifacts into the session:
+
+| Artifact | Type | Purpose |
+|----------|------|---------|
+| `mode-author` | Agent | Drafts complete mode `.md` files from a brief intent statement |
+| `mode-design-discipline` | Skill | Anti-bloat patterns, naming hygiene, narration rules |
+| `mode-schema-reference.md` | Context | Full mode YAML schema injected into every turn |
+
+All three materialize on activation and **disappear on deactivation**. Sessions that never activate `/mode-design` see none of those artifacts.
 
 ## Tool Policies
 
@@ -54,6 +75,18 @@ The `confirm` policy integrates with the approval hook system. When a tool is ma
 This is used by `careful` mode for write operations (`write_file`, `edit_file`, `bash`).
 
 ## Creating Custom Modes
+
+### Authoring with mode-design
+
+The fastest way to author a new mode is to activate `/mode-design`:
+
+```
+/mode-design
+```
+
+This mode contributes the `mode-author` agent, the `mode-design-discipline` skill, and the full schema reference. Together they guide you through intent statement → tool policy → body draft in a single session. The full schema reference is at `context/mode-schema-reference.md`, reachable as `@modes:context/mode-schema-reference.md` or injected automatically when `/mode-design` is active.
+
+### Authoring by hand
 
 Create a markdown file with YAML frontmatter:
 
@@ -165,11 +198,16 @@ amplifier-bundle-modes/
 ├── modes/                       # Built-in mode definitions
 │   ├── explore.md
 │   ├── plan.md
-│   └── careful.md
+│   ├── careful.md
+│   └── mode-design.md           # advertised:false — human-only slash command
 ├── modules/
-│   └── hooks-mode/              # Generic mode hook module
+│   ├── hooks-mode/              # Generic mode hook module
+│   │   ├── pyproject.toml
+│   │   └── amplifier_module_hooks_mode/
+│   │       └── __init__.py
+│   └── tool-mode/               # LLM-facing mode(list/set/clear) tool
 │       ├── pyproject.toml
-│       └── amplifier_module_hooks_mode/
+│       └── amplifier_module_tool_mode/
 │           └── __init__.py
 ├── context/
 │   └── modes-instructions.md    # Agent-facing context

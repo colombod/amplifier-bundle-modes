@@ -197,7 +197,7 @@ class TestModeDiscovery:
 
         discovery = ModeDiscovery(search_paths=[modes_dir])
         modes = discovery.list_modes()
-        names = [name for name, _desc, _source in modes]
+        names = [entry.name for entry in modes]
         assert "plan" in names
         assert "review" in names
 
@@ -298,7 +298,7 @@ class TestBundleDiscovery:
         discovery = ModeDiscovery(search_paths=[], coordinator=coordinator)
 
         modes = discovery.list_modes()
-        names = [n for n, _desc, _source in modes]
+        names = [entry.name for entry in modes]
         assert "alpha" in names
         assert "beta" in names
 

@@ -148,16 +148,24 @@ class ModeTool:
             )
 
     async def _handle_list(self, discovery: Any) -> ToolResult:
-        """List all available modes."""
-        modes_list = discovery.list_modes()
+        """List available modes visible to the LLM.
+
+        Filters to only advertised modes — modes with ``advertised: false`` are
+        intentionally hidden from LLM-facing listings.  The CLI's ``/modes``
+        command shows all modes (including unadvertised ones marked ``(hidden)``);
+        that filter is applied in the CLI, not here.
+        """
+        all_modes = discovery.list_modes()
         active = self.coordinator.session_state.get("active_mode")
+        # LLM-facing policy: only surface advertised modes
         return ToolResult(
             success=True,
             output={
                 "active_mode": active,
                 "modes": [
-                    {"name": name, "description": desc, "source": source}
-                    for name, desc, source in modes_list
+                    {"name": entry.name, "description": entry.description, "source": entry.source}
+                    for entry in all_modes
+                    if entry.advertised
                 ],
             },
         )
@@ -218,7 +226,8 @@ class ModeTool:
                 error={
                     "code": "mode_not_found",
                     "message": f"Mode '{name}' not found.",
-                    "available_modes": [n for n, _d, _s in available],
+                    # LLM-facing: only surface advertised modes in the error hint
+                    "available_modes": [e.name for e in available if e.advertised],
                 },
             )
 
