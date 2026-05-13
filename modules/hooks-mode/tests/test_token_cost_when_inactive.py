@@ -14,12 +14,12 @@ Test catalogue
    — mode-author must never appear in the agent registry when /mode-design
      was never activated.
 
-2. ``test_inactive_session_has_no_mode_overlay_context_capability``
-   — register_capability must never be called with ``mode_overlay_context``
+2. ``test_inactive_session_has_no_runtime_context_overlay_capability``
+   — register_capability must never be called with ``runtime_context_overlay``
      while no mode is active.
 
-3. ``test_inactive_session_has_no_mode_overlay_skills_capability``
-   — register_capability must never be called with ``mode_overlay_skills``
+3. ``test_inactive_session_has_no_runtime_skill_overlay_capability``
+   — register_capability must never be called with ``runtime_skill_overlay``
      while no mode is active.
 
 4. ``test_inactive_session_provider_request_returns_continue``
@@ -109,15 +109,15 @@ def test_inactive_session_has_no_mode_design_agent_in_registry() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — no mode_overlay_context capability registered
+# Test 2 — no runtime_context_overlay capability registered
 # ---------------------------------------------------------------------------
 
 
-def test_inactive_session_has_no_mode_overlay_context_capability() -> None:
-    """register_capability must never be called with mode_overlay_context when inactive.
+def test_inactive_session_has_no_runtime_context_overlay_capability() -> None:
+    """register_capability must never be called with runtime_context_overlay when inactive.
 
     Scenario: create coordinator + discovery, never activate a mode.  Assert
-    that register_capability was never called with the ``mode_overlay_context``
+    that register_capability was never called with the ``runtime_context_overlay``
     capability name.
     """
     from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks
@@ -140,15 +140,15 @@ def test_inactive_session_has_no_mode_overlay_context_capability() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 3 — no mode_overlay_skills capability registered
+# Test 3 — no runtime_skill_overlay capability registered
 # ---------------------------------------------------------------------------
 
 
-def test_inactive_session_has_no_mode_overlay_skills_capability() -> None:
-    """register_capability must never be called with mode_overlay_skills when inactive.
+def test_inactive_session_has_no_runtime_skill_overlay_capability() -> None:
+    """register_capability must never be called with runtime_skill_overlay when inactive.
 
     Scenario: create coordinator + discovery, never activate a mode.  Assert
-    that register_capability was never called with the ``mode_overlay_skills``
+    that register_capability was never called with the ``runtime_skill_overlay``
     capability name.
     """
     from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks

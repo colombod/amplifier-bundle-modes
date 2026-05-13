@@ -707,7 +707,7 @@ async def test_mode_design_end_to_end() -> None:
        "Amplifier Mode Schema Reference") ends up in the injected system-reminder
        context when handle_provider_request fires.
     3. The skill ``mode-design-discipline`` is discoverable via the overlay's
-       registered capability (mode_overlay_skills).
+       registered capability (runtime_skill_overlay).
 
     After deactivation:
     - All three are gone: agent removed, schema reference absent from context,
@@ -716,7 +716,7 @@ async def test_mode_design_end_to_end() -> None:
     Notes on implementation details:
     - Phase 2 shipped ``handle_mode_cleared`` (not ``handle_mode_deactivated``);
       the test uses the actual handler name.
-    - Phase 2 stores skills via ``coordinator.register_capability('mode_overlay_skills', [...])``.
+    - Phase 2 stores skills via ``coordinator.register_capability('runtime_skill_overlay', [...])``.
       The skills check below reads from ``register_capability`` mock call log, not
       ``coordinator.config['skills']``.  The spec allows updating only these lines.
     """
@@ -812,7 +812,7 @@ async def test_mode_design_end_to_end() -> None:
 
 
 # ---------------------------------------------------------------------------
-# M3 — contributes.context auto-injection via mode_overlay_context consumer
+# M3 — contributes.context auto-injection via runtime_context_overlay consumer
 # ---------------------------------------------------------------------------
 
 
@@ -824,7 +824,7 @@ async def test_contributes_context_auto_injected(tmp_path: Path) -> None:
     Scenario:
     - A mode is active with body text that does NOT reference the contributed
       context file.
-    - The coordinator's ``mode_overlay_context`` capability holds the path to
+    - The coordinator's ``runtime_context_overlay`` capability holds the path to
       that file (set by RuntimeOverlay.apply during activation).
     - ``handle_provider_request`` is called.
 
@@ -832,7 +832,7 @@ async def test_contributes_context_auto_injected(tmp_path: Path) -> None:
     - The contributed context file's content appears in the injected
       ``<system-reminder>`` block, prepended before the mode body.
     - This proves that ``handle_provider_request`` consumes
-      ``mode_overlay_context`` directly rather than relying solely on inline
+      ``runtime_context_overlay`` directly rather than relying solely on inline
       ``@``-mentions in the mode body.
     """
     from amplifier_module_hooks_mode import ModeDiscovery, ModeHooks
