@@ -617,3 +617,91 @@ class TestEventsContributorRegistration:
         assert channel == "observability.events"
         assert contributor_id == "bundle-modes:hooks-mode"
         assert supplier() == ALL_EVENTS
+
+
+# ---------------------------------------------------------------------------
+# B3 guard: warn on session-state inconsistency
+#
+# When active_mode is None but a mode_runtime_overlay exists in session_state,
+# it indicates session-resume state loss (in-process session_state was not
+# persisted across process restarts).  The guard doesn't fix the bug but
+# makes the failure LOUD (logged WARNING) rather than SILENT (no injection
+# and no indication why).
+# ---------------------------------------------------------------------------
+
+
+class TestB3SessionStateInconsistencyGuard:
+    """Regression guard for B3 (session-resume state loss detection).
+
+    handle_provider_request must log a WARNING when it detects that a
+    mode_runtime_overlay exists in session_state but active_mode is None.
+    This indicates that the overlay was constructed in a prior process turn
+    but the active_mode flag was lost on resume.
+    """
+
+    @pytest.mark.asyncio
+    async def test_warns_when_overlay_exists_but_active_mode_is_none(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """WARN is emitted when mode_runtime_overlay is set but active_mode is None."""
+        import logging
+
+        modes_dir = tmp_path / "modes"
+        modes_dir.mkdir()
+        _create_mode_file(modes_dir, "design")
+
+        coordinator = _make_coordinator(active_mode=None)
+        # Simulate state after session resume: overlay was created in previous
+        # process but active_mode was lost (it's in-process memory only)
+        coordinator.session_state["mode_runtime_overlay"] = MagicMock()
+
+        discovery = ModeDiscovery(search_paths=[modes_dir])
+        hooks = ModeHooks(coordinator, discovery)
+
+        with caplog.at_level(logging.WARNING, logger="amplifier_module_hooks_mode"):
+            result = await hooks.handle_provider_request("provider:request", {})
+
+        # Handler should still return continue — it cannot inject without active_mode
+        assert result.action == "continue"
+
+        # The WARNING must be logged
+        assert any(
+            "active_mode is None" in record.message
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        ), (
+            "Expected a WARNING about session-state inconsistency but none was logged. "
+            f"Logged messages: {[r.message for r in caplog.records]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_warn_when_no_overlay_and_no_active_mode(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No WARNING when both active_mode and overlay are absent (normal inactive state)."""
+        import logging
+
+        modes_dir = tmp_path / "modes"
+        modes_dir.mkdir()
+
+        coordinator = _make_coordinator(active_mode=None)
+        # No overlay in session_state — this is normal before any mode is activated
+        # (session_state["mode_runtime_overlay"] is absent, not just None)
+
+        discovery = ModeDiscovery(search_paths=[modes_dir])
+        hooks = ModeHooks(coordinator, discovery)
+
+        with caplog.at_level(logging.WARNING, logger="amplifier_module_hooks_mode"):
+            result = await hooks.handle_provider_request("provider:request", {})
+
+        assert result.action == "continue"
+        # No inconsistency warning should fire when overlay is genuinely absent
+        inconsistency_warnings = [
+            r
+            for r in caplog.records
+            if "active_mode is None" in r.message and r.levelno == logging.WARNING
+        ]
+        assert not inconsistency_warnings, (
+            "Unexpected inconsistency WARNING when no overlay exists: "
+            f"{[r.message for r in inconsistency_warnings]}"
+        )

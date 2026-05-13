@@ -58,6 +58,12 @@ class ModeDefinition:
     default_action: str = "block"  # "block" or "allow"
     allowed_transitions: list[str] | None = None  # None = any transition allowed
     allow_clear: bool = True  # False = mode(clear) denied
+    advertised: bool = (
+        True  # NEW (Phase 2): False hides the mode from LLM-facing listings
+    )
+    contributes: dict[str, Any] = field(
+        default_factory=dict
+    )  # NEW (Phase 2): runtime overlay contributions
 
 
 def parse_mode_file(file_path: Path) -> ModeDefinition | None:
@@ -165,6 +171,33 @@ def parse_mode_file(file_path: Path) -> ModeDefinition | None:
         )
         shortcut = None
 
+    # Phase 2: Parse-time referential-integrity lints.
+    contributes_block = mode_config.get("contributes", {}) or {}
+    safe_list = list(tools_config.get("safe", []) or [])
+    default_action_value = mode_config.get("default_action", "block")
+    if (
+        contributes_block.get("agents")
+        and "delegate" not in safe_list
+        and default_action_value != "allow"
+    ):
+        logger.warning(
+            "Mode '%s' contributes agents but does not allow `delegate` in tools.safe "
+            "(and default_action is not 'allow') — contributed agents will be unreachable "
+            "by the LLM while this mode is active.",
+            resolved_name,
+        )
+    if (
+        contributes_block.get("skills")
+        and "load_skill" not in safe_list
+        and default_action_value != "allow"
+    ):
+        logger.warning(
+            "Mode '%s' contributes skills but does not allow `load_skill` in tools.safe "
+            "(and default_action is not 'allow') — contributed skills will be undiscoverable "
+            "by the LLM while this mode is active.",
+            resolved_name,
+        )
+
     return ModeDefinition(
         name=resolved_name,
         description=mode_config.get("description", ""),
@@ -177,6 +210,8 @@ def parse_mode_file(file_path: Path) -> ModeDefinition | None:
         default_action=mode_config.get("default_action", "block"),
         allowed_transitions=mode_config.get("allowed_transitions"),
         allow_clear=mode_config.get("allow_clear", True),
+        advertised=mode_config.get("advertised", True),
+        contributes=mode_config.get("contributes", {}) or {},
     )
 
 
@@ -392,8 +427,17 @@ class ModeDiscovery:
 
         return None
 
-    def list_modes(self) -> list[tuple[str, str, str]]:
-        """List all available modes as (name, description, source) tuples."""
+    def list_modes(
+        self, include_unadvertised: bool = False
+    ) -> list[tuple[str, str, str]]:
+        """List available modes as (name, description, source) tuples.
+
+        Args:
+            include_unadvertised: If False (default), modes with `advertised: false`
+                are excluded from the result — this is the LLM-facing listing.
+                If True, all modes are returned — used by human-facing surfaces
+                (e.g. the CLI's `/modes --all`).
+        """
         self._ensure_bundle_discovery()
         modes: dict[str, tuple[str, str]] = {}
 
@@ -405,6 +449,8 @@ class ModeDiscovery:
                 if name not in modes:  # First match wins (precedence)
                     mode_def = parse_mode_file(mode_file)
                     if mode_def:
+                        if not include_unadvertised and not mode_def.advertised:
+                            continue
                         mode_def.source = source_label
                         modes[name] = (mode_def.description, source_label)
                         self._cache[name] = mode_def
@@ -548,24 +594,65 @@ class ModeHooks:
 
         try:
             mode = self._get_active_mode()
-            if not mode or not mode.context:
+            if not mode:
+                # B3 guard: detect session-resume state loss.
+                # mode_runtime_overlay is constructed in-process and stored in
+                # session_state, but session_state is not persisted across
+                # process restarts.  If an overlay exists but active_mode is
+                # None, the process was likely restarted (e.g. amplifier run
+                # --resume) and the active_mode flag was lost.  The overlay
+                # contributions are still registered with the coordinator from
+                # the previous process, but the handler can no longer read
+                # the mode name to inject context.  Log a loud WARNING so the
+                # issue is visible in logs rather than silently missing.
+                if (
+                    self.coordinator.session_state.get("mode_runtime_overlay")
+                    is not None
+                ):
+                    logger.warning(
+                        "Mode runtime overlay exists but active_mode is None — "
+                        "possible session-resume state loss. "
+                        "Mode contributions will not be injected this turn."
+                    )
+                return HookResult(action="continue")
+            if not mode.context:
                 return HookResult(action="continue")
 
             # Resolve any @namespace:path mentions in the mode body before injection
             resolved_context = self._resolve_mentions(mode.context)
 
+            # Inject files declared in contributes.context (mode_overlay_context
+            # capability is populated by RuntimeOverlay.apply on activation).
+            # Injection order: contributed-context first, then mode body — all
+            # wrapped in one <system-reminder> block so the LLM sees a single
+            # coherent context chunk rather than interleaved fragments.
+            contributed_content = ""
+            context_paths: list[str] = (
+                self.coordinator.get_capability("mode_overlay_context") or []
+            )
+            if context_paths:
+                # Build a newline-separated block of @-mentions; _resolve_mentions
+                # replaces each standalone mention line with the file's content.
+                path_block = "\n".join(str(p) for p in context_paths)
+                resolved_paths = self._resolve_mentions(path_block)
+                if resolved_paths.strip():
+                    contributed_content = resolved_paths.rstrip("\n") + "\n\n"
+
+            # Combine contributed context (if any) with the mode body
+            full_context = contributed_content + resolved_context
+
             # Emit mode:context_injected only when the context has changed (hash-gated).
             # Nested emit is safe: mode:context_injected is a different event name from
             # provider:request, no handlers in this module listen on it, so there is no
             # recursive dispatch path.
-            content_hash = hashlib.sha256(resolved_context.encode()).hexdigest()
+            content_hash = hashlib.sha256(full_context.encode()).hexdigest()
             if content_hash != self._last_context_hash:
                 self._last_context_hash = content_hash
                 await self.coordinator.hooks.emit(
                     MODE_CONTEXT_INJECTED,
                     {
                         "mode": mode.name,
-                        "context_length": len(resolved_context),
+                        "context_length": len(full_context),
                         "content_hash": content_hash,
                     },
                 )
@@ -577,7 +664,7 @@ class ModeHooks:
                 f"You are CURRENTLY in {mode.name} mode. It is already active — "
                 f'do NOT call mode(set, "{mode.name}") to re-activate it. '
                 f"Follow the guidance below.\n\n"
-                f"{resolved_context}\n"
+                f"{full_context}\n"
                 f"</system-reminder>"
             )
 
@@ -688,6 +775,178 @@ class ModeHooks:
                 exc_info=True,
             )
             return HookResult(action="deny")
+
+    def _get_or_create_overlay(self) -> Any:
+        """Get the singleton RuntimeOverlay for this session, creating it lazily.
+
+        Stored in session_state so it survives across activations and
+        deactivations within a single session, keeping refcounts coherent.
+        """
+        overlay = self.coordinator.session_state.get("mode_runtime_overlay")
+        if overlay is None:
+            from amplifier_foundation import RuntimeOverlay
+            from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
+
+            # TODO(Phase 3 de-dup): The overlay emits MODE_TRANSITION_COMPLETED /
+            # MODE_ACTIVATION_FAILED on every apply/revoke.  The three handler
+            # methods (handle_mode_activated, handle_mode_changed,
+            # handle_mode_cleared) ALSO emit those same events directly, producing
+            # duplicate events on the bus — one from the overlay and one from the
+            # handler.  Two options for Phase 3 cleanup:
+            #   (a) remove the handlers' manual emits (overlay already covers them)
+            #   (b) make overlay's success/failure events optional (Phase 1 follow-up)
+            overlay = RuntimeOverlay(
+                self.coordinator,
+                success_event=MODE_TRANSITION_COMPLETED,
+                failure_event=MODE_ACTIVATION_FAILED,
+            )
+            self.coordinator.session_state["mode_runtime_overlay"] = overlay
+        return overlay
+
+    async def handle_mode_activated(self, _event: str, data: dict) -> "HookResult":
+        """Apply the activated mode's contributions via RuntimeOverlay.
+
+        On any failure (either overlay.apply() returning success=False, or an
+        unexpected exception): clear active_mode so the session is not stuck in
+        a half-activated state, emit mode:activation_failed, and return
+        continue.  The RuntimeOverlay primitive handles atomic rollback of any
+        partial contributions it applied before the failure.
+
+        Payload key resolution (defensive, dual-key):
+          Canonical:  data["name"]        (set by tool-mode since contract fix)
+          Legacy:     data["mode"]        (tool-mode original key, kept for compat)
+          Fallback:   session_state["active_mode"]  (set by tool-mode after emit)
+        """
+        from amplifier_core.models import HookResult
+        from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
+
+        mode_name = (
+            data.get("name")
+            or data.get("mode")
+            or self.coordinator.session_state.get("active_mode")
+        )
+        if not mode_name:
+            return HookResult(action="continue")
+
+        try:
+            mode_def = self.discovery.find(mode_name)
+            if mode_def and mode_def.contributes:
+                overlay = self._get_or_create_overlay()
+                apply_result = await overlay.apply(
+                    f"mode:{mode_name}", mode_def.contributes
+                )
+                if not apply_result.success:
+                    # The overlay already rolled back partial contributions and
+                    # emitted MODE_ACTIVATION_FAILED via its _emit method.
+                    # Clear active_mode so the session reflects the failure.
+                    self.coordinator.session_state["active_mode"] = None
+                    return HookResult(action="continue")
+
+            await self.coordinator.hooks.emit(
+                MODE_TRANSITION_COMPLETED,
+                {"mode": mode_name, "phase": "activated"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "handle_mode_activated: overlay apply failed for mode '%s': %s",
+                mode_name,
+                exc,
+                exc_info=True,
+            )
+            # Clear active_mode on unexpected exceptions too — the activation
+            # did not complete successfully.
+            self.coordinator.session_state["active_mode"] = None
+            await self.coordinator.hooks.emit(
+                MODE_ACTIVATION_FAILED,
+                {"mode": mode_name, "error": str(exc)},
+            )
+
+        return HookResult(action="continue")
+
+    async def handle_mode_changed(self, _event: str, data: dict) -> "HookResult":
+        """Revoke old mode's scope, then apply new mode's scope.
+
+        Payload key resolution (defensive, dual-key):
+          Canonical:  data["old"] / data["new"]               (set by tool-mode since contract fix)
+          Legacy:     data["from_mode"] / data["to_mode"]     (tool-mode original keys, kept for compat)
+        Either may be falsy — defensive code costs nothing. On any error, emit
+        mode:activation_failed and continue.
+        """
+        from amplifier_core.models import HookResult
+        from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
+
+        old_name = data.get("old") or data.get("from_mode")
+        new_name = data.get("new") or data.get("to_mode")
+
+        try:
+            overlay = self._get_or_create_overlay()
+            if old_name:
+                await overlay.revoke(f"mode:{old_name}")
+            if new_name:
+                new_def = self.discovery.find(new_name)
+                if new_def and new_def.contributes:
+                    await overlay.apply(f"mode:{new_name}", new_def.contributes)
+
+            await self.coordinator.hooks.emit(
+                MODE_TRANSITION_COMPLETED,
+                {"mode": new_name, "phase": "changed"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "handle_mode_changed: overlay transition failed (old=%s, new=%s): %s",
+                old_name,
+                new_name,
+                exc,
+                exc_info=True,
+            )
+            await self.coordinator.hooks.emit(
+                MODE_ACTIVATION_FAILED,
+                {"mode": new_name, "error": str(exc)},
+            )
+
+        return HookResult(action="continue")
+
+    async def handle_mode_cleared(self, _event: str, data: dict) -> "HookResult":
+        """Revoke the cleared mode's scope.
+
+        Payload key resolution (defensive, dual-key):
+          Canonical:  data["name"]            (set by tool-mode since contract fix)
+          Legacy:     data["previous_mode"]   (tool-mode original key, kept for compat)
+          Fallback:   session_state["active_mode"]  (pre-cleared state if available)
+        On any error, emit mode:activation_failed and continue (revocation is
+        best-effort — leftover state is far better than a broken transition).
+        """
+        from amplifier_core.models import HookResult
+        from .events import MODE_ACTIVATION_FAILED, MODE_TRANSITION_COMPLETED
+
+        mode_name = (
+            data.get("name")
+            or data.get("previous_mode")
+            or self.coordinator.session_state.get("active_mode")
+        )
+        if not mode_name:
+            return HookResult(action="continue")
+
+        try:
+            overlay = self._get_or_create_overlay()
+            await overlay.revoke(f"mode:{mode_name}")
+            await self.coordinator.hooks.emit(
+                MODE_TRANSITION_COMPLETED,
+                {"mode": mode_name, "phase": "cleared"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "handle_mode_cleared: overlay revoke failed for mode '%s': %s",
+                mode_name,
+                exc,
+                exc_info=True,
+            )
+            await self.coordinator.hooks.emit(
+                MODE_ACTIVATION_FAILED,
+                {"mode": mode_name, "error": str(exc)},
+            )
+
+        return HookResult(action="continue")
 
     def reset_warnings(self) -> None:
         """Reset warned tools and context-injected hash (called when switching modes)."""
@@ -807,6 +1066,24 @@ async def mount(
         hooks.handle_tool_pre,
         priority=-20,
         name="mode-tools",
+    )
+
+    # Phase 2: register mode-transition handlers that drive RuntimeOverlay
+    # apply/revoke on the lifecycle events emitted by tool-mode.
+    coordinator.hooks.register(
+        "mode:activated",
+        hooks.handle_mode_activated,
+        name="mode-overlay-activate",
+    )
+    coordinator.hooks.register(
+        "mode:changed",
+        hooks.handle_mode_changed,
+        name="mode-overlay-change",
+    )
+    coordinator.hooks.register(
+        "mode:cleared",
+        hooks.handle_mode_cleared,
+        name="mode-overlay-clear",
     )
 
     # Contribute event catalogue to observability.events channel
