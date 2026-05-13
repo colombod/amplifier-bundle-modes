@@ -15,9 +15,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import yaml
 
@@ -35,6 +36,20 @@ logger = logging.getLogger(__name__)
 
 _SHORTCUT_PATTERN = r"^[a-z][a-z0-9_-]*$"
 _SHORTCUT_RE = re.compile(_SHORTCUT_PATTERN)
+
+
+class ModeListing(NamedTuple):
+    """One entry returned by ModeDiscovery.list_modes().
+
+    Consumers that need to filter (e.g. the LLM-facing tool-mode) check
+    ``entry.advertised``; human-facing surfaces (the CLI's ``/modes``) show all
+    entries and decorate unadvertised ones with a ``(hidden)`` marker.
+    """
+
+    name: str
+    description: str
+    source: str
+    advertised: bool
 
 
 def _is_valid_shortcut(value: str) -> bool:
@@ -431,19 +446,29 @@ class ModeDiscovery:
 
         return None
 
-    def list_modes(
-        self, include_unadvertised: bool = False
-    ) -> list[tuple[str, str, str]]:
-        """List available modes as (name, description, source) tuples.
+    def list_modes(self, **kwargs: Any) -> list[ModeListing]:
+        """List all available modes as ModeListing entries.
 
-        Args:
-            include_unadvertised: If False (default), modes with `advertised: false`
-                are excluded from the result — this is the LLM-facing listing.
-                If True, all modes are returned — used by human-facing surfaces
-                (e.g. the CLI's `/modes --all`).
+        Returns ALL modes (advertised and unadvertised). Consumers that need to
+        filter — e.g. the LLM-facing tool-mode — should check ``entry.advertised``
+        and filter accordingly.  Human-facing surfaces (the CLI's ``/modes``)
+        show all entries and mark unadvertised ones with a ``(hidden)`` indicator.
+
+        The ``include_unadvertised`` keyword argument is still accepted for one
+        release but is ignored; all modes are returned regardless.  Callers that
+        pass it will receive a ``DeprecationWarning``.
         """
+        if "include_unadvertised" in kwargs:
+            warnings.warn(
+                "include_unadvertised is deprecated and will be removed in a future "
+                "release. list_modes() now always returns all modes; consumers should "
+                "filter on ModeListing.advertised as needed.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         self._ensure_bundle_discovery()
-        modes: dict[str, tuple[str, str]] = {}
+        modes: dict[str, ModeListing] = {}
 
         for base_path, source_label in self._search_paths:
             if not base_path.exists():
@@ -453,13 +478,16 @@ class ModeDiscovery:
                 if name not in modes:  # First match wins (precedence)
                     mode_def = parse_mode_file(mode_file)
                     if mode_def:
-                        if not include_unadvertised and not mode_def.advertised:
-                            continue
                         mode_def.source = source_label
-                        modes[name] = (mode_def.description, source_label)
+                        modes[name] = ModeListing(
+                            name=name,
+                            description=mode_def.description,
+                            source=source_label,
+                            advertised=mode_def.advertised,
+                        )
                         self._cache[name] = mode_def
 
-        return sorted((name, desc, source) for name, (desc, source) in modes.items())
+        return sorted(modes.values(), key=lambda m: m.name)
 
     def get_shortcuts(self) -> dict[str, str]:
         """Get mapping of shortcut -> mode name for all modes with shortcuts."""
@@ -1107,6 +1135,7 @@ __all__ = [
     "ModeDefinition",
     "ModeDiscovery",
     "ModeHooks",
+    "ModeListing",
     "mount",
     "parse_mode_file",
 ]
