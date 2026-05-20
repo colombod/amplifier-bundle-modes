@@ -538,8 +538,8 @@ class TestContextInjectedEvent:
         )
 
     @pytest.mark.asyncio
-    async def test_no_active_mode_does_not_emit(self, tmp_path: Path) -> None:
-        """When no active mode, emit is not called and result.action == 'continue'."""
+    async def test_no_active_mode_injects_status_reminder(self, tmp_path: Path) -> None:
+        """When no active mode, handler should inject mode-status reminder."""
         modes_dir = tmp_path / "modes"
         modes_dir.mkdir()
 
@@ -550,7 +550,10 @@ class TestContextInjectedEvent:
 
         result = await hooks.handle_provider_request("provider:request", {})
 
-        assert result.action == "continue"
+        assert result.action == "inject_context"
+        assert 'source="mode-status"' in result.context_injection
+        assert "No mode is currently active" in result.context_injection
+        assert result.ephemeral is True
         coordinator.hooks.emit.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -661,8 +664,9 @@ class TestB3SessionStateInconsistencyGuard:
         with caplog.at_level(logging.WARNING, logger="amplifier_module_hooks_mode"):
             result = await hooks.handle_provider_request("provider:request", {})
 
-        # Handler should still return continue — it cannot inject without active_mode
-        assert result.action == "continue"
+        # Handler should inject the no-mode reminder along with the WARNING
+        assert result.action == "inject_context"
+        assert 'source="mode-status"' in result.context_injection
 
         # The WARNING must be logged
         assert any(
@@ -694,7 +698,9 @@ class TestB3SessionStateInconsistencyGuard:
         with caplog.at_level(logging.WARNING, logger="amplifier_module_hooks_mode"):
             result = await hooks.handle_provider_request("provider:request", {})
 
-        assert result.action == "continue"
+        # Should inject the no-mode reminder
+        assert result.action == "inject_context"
+        assert 'source="mode-status"' in result.context_injection
         # No inconsistency warning should fire when overlay is genuinely absent
         inconsistency_warnings = [
             r
