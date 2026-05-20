@@ -646,9 +646,37 @@ class ModeHooks:
                         "possible session-resume state loss. "
                         "Mode contributions will not be injected this turn."
                     )
-                return HookResult(action="continue")
+                # Inject a positive signal that no mode is active, so the LLM has
+                # an unambiguous reminder even when there's no mode to be in.
+                # This prevents false claims about mode state across turns.
+                no_mode_block = (
+                    '<system-reminder source="mode-status">\n'
+                    "No mode is currently active. "
+                    'Use `mode(operation="list")` to see available modes '
+                    'or `mode(operation="set", name="<name>")` to activate one.\n'
+                    "</system-reminder>"
+                )
+                return HookResult(
+                    action="inject_context",
+                    context_injection=no_mode_block,
+                    context_injection_role="system",
+                    ephemeral=True,
+                )
             if not mode.context:
-                return HookResult(action="continue")
+                # Even if a mode is active but has no markdown body, we inject
+                # a minimal reminder so the LLM always has a positive signal
+                # for "I'm in mode X" rather than silent absence.
+                context_block = (
+                    f'<system-reminder source="mode-{mode.name}">\n'
+                    f"MODE ACTIVE: {mode.name}\n"
+                    f"</system-reminder>"
+                )
+                return HookResult(
+                    action="inject_context",
+                    context_injection=context_block,
+                    context_injection_role="system",
+                    ephemeral=True,
+                )
 
             # Resolve any @namespace:path mentions in the mode body before injection
             resolved_context = self._resolve_mentions(mode.context)
