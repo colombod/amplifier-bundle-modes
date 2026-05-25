@@ -239,7 +239,7 @@ These skills are automatically available via `load_skill`. Load them when
 beginning a review: `load_skill(skill_name="owasp-patterns")`
 ```
 
-**Contributing context:**
+**Contributing context — full section style** (for primary reference material):
 
 ```markdown
 ## Reference Material (auto-injected)
@@ -247,6 +247,29 @@ beginning a review: `load_skill(skill_name="owasp-patterns")`
 `owasp-checklist.md` — OWASP Top 10 checklist for systematic review.
 This document is in your context. Use it as the primary review framework.
 ```
+
+**Contributing context — inline callout style** (for orientation that lives across many modes):
+
+When the contributed file is shared orientation — the same file in N workflow modes per
+the schema reference's §9.7 "Workflow Modes with Shared Orientation" pattern — a
+single-line callout near the top of the mode body is sufficient:
+
+```markdown
+# Wiki Init Mode
+
+**Wiki orientation auto-injected:** `@wiki:context/wiki-instructions.md` is prepended to
+this mode's context — describes the cross-mode workflow and project structure.
+
+(... mode-specific body ...)
+```
+
+The same one-line pattern repeats in each workflow mode that contributes the file. The
+LLM sees the callout regardless of which mode is active, learns the orientation file is
+available, and treats it as authoritative for cross-mode questions.
+
+Reference implementation:
+[`bkrabach/amplifier-bundle-llm-wiki`](https://github.com/bkrabach/amplifier-bundle-llm-wiki)
+applies this pattern across all 5 wiki workflow modes.
 
 ### Cross-Mode Transition Narration
 
