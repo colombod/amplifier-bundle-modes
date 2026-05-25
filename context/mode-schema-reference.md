@@ -58,6 +58,46 @@ When two modes claim the same `shortcut`, first-encountered-in-precedence-order 
 losing mode is still activatable via `/mode <name>`. An `INFO` log is emitted, but no
 error is raised to the user.
 
+### 1.4 Structural Discovery: How `modes/` Gets Scanned
+
+A bundle's `modes/` directory is scanned **automatically when any piece of that bundle
+is composed into a session**. There is no `modes:` field anywhere — the directory is
+discovered by convention based on its location within a composed bundle.
+
+This is what makes near-empty install-anchor behaviors viable. A pure install anchor —
+no `context.include`, no `agents`, no `tools`, no `hooks` — looks like this:
+
+```yaml
+bundle:
+  name: <name>-behavior
+  version: 0.1.0
+  description: ...
+```
+
+When a user composes this behavior via `settings.yaml`'s `app:` or `added:` list, the
+runtime identifies the parent bundle (the directory containing `behaviors/<name>.yaml`)
+and the modes hook scans the parent's `modes/` directory — registering every mode found
+there at priority 5 above.
+
+Result: a 4-line install-anchor behavior is enough to make a bundle's modes discoverable.
+No `modes:` declaration, no explicit listing, no boilerplate.
+
+**Reference implementations:**
+
+- [`microsoft/amplifier-bundle-evaluation`](https://github.com/microsoft/amplifier-bundle-evaluation) —
+  Thin behavior with short awareness context (~110 tokens), single `advertised: false`
+  mode. The canonical lightweight example.
+- [`bkrabach/amplifier-bundle-llm-wiki`](https://github.com/bkrabach/amplifier-bundle-llm-wiki) —
+  Pure-anchor behavior (no context at all), 5 advertised workflow modes each contributing
+  the same orientation file via `contributes.context`. See §9.7 for the pattern.
+
+> **Consequence for behavior authors.** A behavior file's job is structural composition,
+> not capability mounting. Heavy capability belongs in modes (`contributes`), agents
+> (`delegate`), or skills (`load_skill`). The behavior file itself should be as small as
+> possible. See `mode-design-discipline §1` for the symmetric "behaviors should be light"
+> rule and `foundation:docs/AGENT_AUTHORING.md §"Hard policy: behavior context.include
+> token budget"` for the authoritative mechanism ranking.
+
 ---
 
 ## 2. Top-Level Frontmatter Fields
@@ -967,6 +1007,76 @@ Workflow:
 3. Compile findings
 4. Use /mode off when complete; implement fixes in a separate session
 ```
+
+### 9.7 Workflow Modes with Shared Orientation
+
+**Goal:** N workflow modes that all benefit from the same orientation reference
+(cross-mode transitions, project structure, shared vocabulary). Zero-cost when no mode
+is active; orientation mounted while ANY of the N modes is active.
+
+This extends §9.3 (Specialist with Hidden Capabilities) to the multi-mode workflow case.
+Each mode contributes the same context file via `contributes.context`; refcount semantics
+(§7.2 S3) handle mount/unmount as the user moves through the workflow.
+
+**Behavior file** (`behaviors/wiki.yaml`) — pure install anchor (see §1.4), no
+`context.include`; modes are discovered structurally:
+
+```yaml
+bundle:
+  name: wiki-behavior
+  version: 0.2.0
+  description: Workflow modes for LLM-maintained wikis
+```
+
+**Mode files** (`modes/wiki-init.md` and the same pattern in `wiki-ingest`, `wiki-lint`,
+`wiki-publish`, `wiki-query`) — each contributes the same orientation file:
+
+```yaml
+---
+mode:
+  name: wiki-init
+  description: Set up the wiki for a new project
+  advertised: true
+  default_action: block
+
+  tools:
+    safe: [read_file, glob, grep, load_skill, todo, mode]
+    warn: [write_file, edit_file]
+
+  contributes:
+    context:
+      - "@wiki:context/wiki-instructions.md"
+---
+
+## Wiki Init Mode
+
+**Wiki orientation auto-injected:** `@wiki:context/wiki-instructions.md` is prepended to
+this mode's context — it describes the cross-mode workflow and project structure.
+
+(... mode-specific body ...)
+```
+
+**Refcount behavior across the workflow:**
+
+| User action | Refcount of `wiki-instructions.md` | Mounted? |
+|---|---:|:---:|
+| Compose bundle, no mode active | 0 | No |
+| `/mode wiki-init` | 0 → 1 | Yes |
+| `/mode wiki-ingest` (switching from init) | 1 → 0 → 1 | Brief churn (S3) |
+| `/mode wiki-lint` (switching again) | 1 → 0 → 1 | Brief churn (S3) |
+| `/mode off` | 1 → 0 | No |
+
+The S3 brief unmount/remount during mid-workflow transitions is the known v1 cost
+(see §7.2). Since the file's content is identical across all modes, the experience is
+uninterrupted — the file is just reloaded on each transition.
+
+**Reference implementation:**
+[`bkrabach/amplifier-bundle-llm-wiki`](https://github.com/bkrabach/amplifier-bundle-llm-wiki)
+runs this pattern across 5 advertised workflow modes (`wiki-init`, `wiki-ingest`,
+`wiki-lint`, `wiki-publish`, `wiki-query`). When no wiki mode is active, the bundle
+contributes nothing to the session's working context. Validator's verdict on the
+post-refactor state: *"Zero-cost when dormant... Shared instruction context is
+mode-gated via `contributes.context`, loaded only while a wiki mode is active."*
 
 ---
 
