@@ -268,7 +268,7 @@ LLM sees the callout regardless of which mode is active, learns the orientation 
 available, and treats it as authoritative for cross-mode questions.
 
 Reference implementation:
-[`bkrabach/amplifier-bundle-llm-wiki`](https://github.com/bkrabach/amplifier-bundle-llm-wiki)
+[`microsoft/amplifier-bundle-llm-wiki`](https://github.com/microsoft/amplifier-bundle-llm-wiki)
 applies this pattern across all 5 wiki workflow modes.
 
 ### Cross-Mode Transition Narration

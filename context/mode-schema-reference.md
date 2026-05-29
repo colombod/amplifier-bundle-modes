@@ -87,7 +87,7 @@ No `modes:` declaration, no explicit listing, no boilerplate.
 - [`microsoft/amplifier-bundle-evaluation`](https://github.com/microsoft/amplifier-bundle-evaluation) —
   Thin behavior with short awareness context (~110 tokens), single `advertised: false`
   mode. The canonical lightweight example.
-- [`bkrabach/amplifier-bundle-llm-wiki`](https://github.com/bkrabach/amplifier-bundle-llm-wiki) —
+- [`microsoft/amplifier-bundle-llm-wiki`](https://github.com/microsoft/amplifier-bundle-llm-wiki) —
   Pure-anchor behavior (no context at all), 5 advertised workflow modes each contributing
   the same orientation file via `contributes.context`. See §9.7 for the pattern.
 
@@ -1071,7 +1071,7 @@ The S3 brief unmount/remount during mid-workflow transitions is the known v1 cos
 uninterrupted — the file is just reloaded on each transition.
 
 **Reference implementation:**
-[`bkrabach/amplifier-bundle-llm-wiki`](https://github.com/bkrabach/amplifier-bundle-llm-wiki)
+[`microsoft/amplifier-bundle-llm-wiki`](https://github.com/microsoft/amplifier-bundle-llm-wiki)
 runs this pattern across 5 advertised workflow modes (`wiki-init`, `wiki-ingest`,
 `wiki-lint`, `wiki-publish`, `wiki-query`). When no wiki mode is active, the bundle
 contributes nothing to the session's working context. Validator's verdict on the
