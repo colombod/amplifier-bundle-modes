@@ -27,8 +27,13 @@ def _write_mode(
 
 
 class TestShortcutValidator:
-    def test_regex_pattern_is_lowercase_only(self):
-        assert _SHORTCUT_PATTERN == r"^[a-z][a-z0-9_-]*$"
+    def test_regex_pattern_is_case_tolerant(self):
+        """The pattern accepts mixed case so authors can write `shortcut: COSam`
+        for visual clarity. The parse pipeline lowercases the value before
+        storing it (so dispatch keys stay lowercase) and the CLI lowercases
+        all slash input before lookup — both end up at `cosam` either way.
+        """
+        assert _SHORTCUT_PATTERN == r"^[A-Za-z][A-Za-z0-9_-]*$"
 
     def test_valid_lowercase_identifier(self):
         assert _is_valid_shortcut("plan") is True
@@ -36,14 +41,18 @@ class TestShortcutValidator:
         assert _is_valid_shortcut("perf_audit") is True
         assert _is_valid_shortcut("x1") is True
 
+    def test_accepts_mixed_case(self):
+        """Authors may write the shortcut in any case for readability.
+        Storage and dispatch are both case-insensitive (see parse pipeline)."""
+        assert _is_valid_shortcut("COSam") is True
+        assert _is_valid_shortcut("MyMode") is True
+        assert _is_valid_shortcut("CamelCase") is True
+
     def test_rejects_leading_digit(self):
         assert _is_valid_shortcut("0mode") is False
 
     def test_rejects_leading_hyphen(self):
         assert _is_valid_shortcut("-mode") is False
-
-    def test_rejects_uppercase(self):
-        assert _is_valid_shortcut("MyMode") is False
 
     def test_rejects_spaces_and_slashes(self):
         assert _is_valid_shortcut("my mode") is False
@@ -84,6 +93,28 @@ class TestShortcutDefaultFromName:
         mode_def = parse_mode_file(f)
         assert mode_def is not None
         assert mode_def.shortcut == "foo"  # §9.1 case 10
+
+
+class TestShortcutMixedCaseInYaml:
+    """Mixed-case shortcuts in YAML (e.g. `shortcut: COSam`) are accepted by
+    the validator and lowercased before storage. Slash-command dispatch in
+    the CLI also lowercases input, so /COSam, /cosam, /Cosam all resolve."""
+
+    def test_mixed_case_yaml_value_lowercased_at_storage(self, tmp_path):
+        f = _write_mode(
+            tmp_path,
+            "review.md",
+            textwrap.dedent("""
+            mode:
+              name: code-review
+              shortcut: COSam
+              tools: {safe: []}
+              default_action: block
+        """).strip(),
+        )
+        mode_def = parse_mode_file(f)
+        assert mode_def is not None
+        assert mode_def.shortcut == "cosam"
 
 
 class TestShortcutOptOut:

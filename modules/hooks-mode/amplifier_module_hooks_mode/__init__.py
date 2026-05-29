@@ -34,7 +34,14 @@ from .events import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-_SHORTCUT_PATTERN = r"^[a-z][a-z0-9_-]*$"
+# Authors may write shortcuts in any case (e.g. `shortcut: COSam`) for visual
+# clarity in YAML; the parse pipeline lowercases at line ~179 before this
+# check runs. The pattern intentionally accepts mixed case so that
+# `_is_valid_shortcut` reflects what the system actually accepts at the
+# author-input boundary, not what it stores internally after normalization.
+# Slash-command dispatch in the CLI also lowercases all user input
+# (`main.py:455`), so `/COSam` and `/cosam` are equivalent at lookup time.
+_SHORTCUT_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]*$"
 _SHORTCUT_RE = re.compile(_SHORTCUT_PATTERN)
 
 
